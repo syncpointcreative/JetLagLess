@@ -9,40 +9,60 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { buildPlan, JetlagInput, JetlagPlan } from './src/lib/jetlag';
+import { lookupAirport, Airport } from './src/lib/airports';
+import { buildPlan, JetlagPlan, tzOffsetHours } from './src/lib/jetlag';
 
-const initial: JetlagInput = {
-  homeOffsetHours: -5,
-  destOffsetHours: 9,
+interface FormState {
+  originIata: string;
+  destIata: string;
+  departureDate: string; // YYYY-MM-DD
+  departureLocalTime: string; // HH:MM
+  flightDurationHours: string;
+  usualBedtime: string;
+  usualWakeTime: string;
+  prepDaysAvailable: string;
+}
+
+const initial: FormState = {
+  originIata: 'JFK',
+  destIata: 'NRT',
+  departureDate: todayISO(),
   departureLocalTime: '18:30',
-  flightDurationHours: 13.5,
+  flightDurationHours: '13.5',
   usualBedtime: '23:00',
   usualWakeTime: '07:00',
-  prepDaysAvailable: 3,
+  prepDaysAvailable: '3',
 };
 
-export default function App() {
-  const [form, setForm] = useState<Record<keyof JetlagInput, string>>({
-    homeOffsetHours: String(initial.homeOffsetHours),
-    destOffsetHours: String(initial.destOffsetHours),
-    departureLocalTime: initial.departureLocalTime,
-    flightDurationHours: String(initial.flightDurationHours),
-    usualBedtime: initial.usualBedtime,
-    usualWakeTime: initial.usualWakeTime,
-    prepDaysAvailable: String(initial.prepDaysAvailable),
-  });
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
-  const set = (k: keyof JetlagInput, v: string) =>
-    setForm((f) => ({ ...f, [k]: v }));
+export default function App() {
+  const [form, setForm] = useState<FormState>(initial);
+  const set = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const origin = lookupAirport(form.originIata);
+  const dest = lookupAirport(form.destIata);
 
   const { plan, error } = useMemo<{ plan?: JetlagPlan; error?: string }>(() => {
+    if (!origin) return { error: `Unknown origin airport "${form.originIata}". Try a 3-letter IATA code like JFK, LAX, LHR.` };
+    if (!dest) return { error: `Unknown destination airport "${form.destIata}". Try a 3-letter IATA code.` };
     try {
+      const depDate = new Date(`${form.departureDate}T${form.departureLocalTime}:00`);
+      if (isNaN(depDate.getTime())) throw new Error('Invalid departure date or time.');
+      const homeOffsetHours = tzOffsetHours(origin.tz, depDate);
+      // Estimate destination offset at arrival instant for DST accuracy.
+      const flightHours = parseFloat(form.flightDurationHours);
+      if (!isFinite(flightHours) || flightHours <= 0) throw new Error('Enter a valid flight duration.');
+      const arrInstant = new Date(depDate.getTime() + flightHours * 3_600_000);
+      const destOffsetHours = tzOffsetHours(dest.tz, arrInstant);
       return {
         plan: buildPlan({
-          homeOffsetHours: parseFloat(form.homeOffsetHours),
-          destOffsetHours: parseFloat(form.destOffsetHours),
+          homeOffsetHours,
+          destOffsetHours,
           departureLocalTime: form.departureLocalTime,
-          flightDurationHours: parseFloat(form.flightDurationHours),
+          flightDurationHours: flightHours,
           usualBedtime: form.usualBedtime,
           usualWakeTime: form.usualWakeTime,
           prepDaysAvailable: parseInt(form.prepDaysAvailable, 10) || 0,
@@ -51,34 +71,39 @@ export default function App() {
     } catch (e: any) {
       return { error: e.message };
     }
-  }, [form]);
+  }, [form, origin, dest]);
 
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>JetLagLess</Text>
         <Text style={styles.subtitle}>
-          Tell us about your flight and your sleep — we'll plan when to nap, when to wake, and how
-          to prep your body.
+          Enter your flight and your usual sleep — we'll plan when to nap, when to wake, and how to
+          prep your body.
         </Text>
 
         <Section title="Flight">
-          <Field
-            label="Home timezone offset (UTC±)"
-            value={form.homeOffsetHours}
-            onChange={(v) => set('homeOffsetHours', v)}
-            keyboardType="numbers-and-punctuation"
-            hint="e.g. -5 for New York, 0 for London"
+          <AirportField
+            label="Origin airport (IATA code)"
+            value={form.originIata}
+            onChange={(v) => set('originIata', v.toUpperCase())}
+            airport={origin}
+            placeholder="JFK"
+          />
+          <AirportField
+            label="Destination airport (IATA code)"
+            value={form.destIata}
+            onChange={(v) => set('destIata', v.toUpperCase())}
+            airport={dest}
+            placeholder="NRT"
           />
           <Field
-            label="Destination timezone offset (UTC±)"
-            value={form.destOffsetHours}
-            onChange={(v) => set('destOffsetHours', v)}
-            keyboardType="numbers-and-punctuation"
-            hint="e.g. 9 for Tokyo, 1 for Paris"
+            label="Departure date (YYYY-MM-DD)"
+            value={form.departureDate}
+            onChange={(v) => set('departureDate', v)}
           />
           <Field
             label="Departure local time (HH:MM)"
@@ -113,11 +138,11 @@ export default function App() {
         </Section>
 
         {error && <Text style={styles.error}>{error}</Text>}
-        {plan && <Results plan={plan} />}
+        {plan && origin && dest && <Results plan={plan} origin={origin} dest={dest} />}
 
         <View style={{ height: 40 }} />
       </ScrollView>
-      <StatusBar style="auto" />
+      <StatusBar style="light" />
     </KeyboardAvoidingView>
   );
 }
@@ -137,12 +162,14 @@ function Field({
   onChange,
   hint,
   keyboardType,
+  placeholder,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   hint?: string;
   keyboardType?: 'decimal-pad' | 'number-pad' | 'numbers-and-punctuation' | 'default';
+  placeholder?: string;
 }) {
   return (
     <View style={styles.field}>
@@ -154,23 +181,66 @@ function Field({
         keyboardType={keyboardType ?? 'default'}
         autoCapitalize="none"
         autoCorrect={false}
+        placeholder={placeholder}
+        placeholderTextColor="#4a527a"
       />
       {hint && <Text style={styles.hint}>{hint}</Text>}
     </View>
   );
 }
 
-function Results({ plan }: { plan: JetlagPlan }) {
+function AirportField({
+  label,
+  value,
+  onChange,
+  airport,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  airport?: Airport;
+  placeholder?: string;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={(v) => onChange(v.slice(0, 3))}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        maxLength={3}
+        placeholder={placeholder}
+        placeholderTextColor="#4a527a"
+      />
+      {airport ? (
+        <Text style={styles.hintGood}>
+          {airport.name} — {airport.city}, {airport.country} · {airport.tz}
+        </Text>
+      ) : value.length > 0 ? (
+        <Text style={styles.hintBad}>Not found</Text>
+      ) : (
+        <Text style={styles.hint}>Enter a 3-letter IATA code</Text>
+      )}
+    </View>
+  );
+}
+
+function Results({ plan, origin, dest }: { plan: JetlagPlan; origin: Airport; dest: Airport }) {
   const dirLabel =
     plan.direction === 'east'
-      ? `Eastward, +${plan.shiftHours}h (advance)`
+      ? `Eastward, +${plan.shiftHours.toFixed(1)}h (advance)`
       : plan.direction === 'west'
-        ? `Westward, ${plan.shiftHours}h (delay)`
+        ? `Westward, ${plan.shiftHours.toFixed(1)}h (delay)`
         : 'No timezone change';
 
   return (
     <View style={styles.results}>
-      <Text style={styles.resultsTitle}>Your plan</Text>
+      <Text style={styles.resultsTitle}>
+        {origin.city} → {dest.city}
+      </Text>
 
       <View style={styles.summaryRow}>
         <Summary label="Direction" value={dirLabel} />
@@ -265,6 +335,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   hint: { fontSize: 11, color: '#6b73a0', marginTop: 4 },
+  hintGood: { fontSize: 11, color: '#7ee0a1', marginTop: 4 },
+  hintBad: { fontSize: 11, color: '#ff9b9b', marginTop: 4 },
   error: { color: '#ff7676', marginVertical: 8 },
   results: {
     backgroundColor: '#1a2150',
