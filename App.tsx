@@ -3,17 +3,20 @@ import { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { lookupAirport, Airport } from './src/lib/airports';
+import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
 import { buildPlan, JetlagPlan, tzOffsetHours } from './src/lib/jetlag';
 
 interface FormState {
+  originQuery: string;
   originIata: string;
+  destQuery: string;
   destIata: string;
   departureDate: string; // YYYY-MM-DD
   departureLocalTime: string; // HH:MM
@@ -24,7 +27,9 @@ interface FormState {
 }
 
 const initial: FormState = {
+  originQuery: 'JFK',
   originIata: 'JFK',
+  destQuery: 'NRT',
   destIata: 'NRT',
   departureDate: todayISO(),
   departureLocalTime: '18:30',
@@ -86,19 +91,25 @@ export default function App() {
         </Text>
 
         <Section title="Flight">
-          <AirportField
-            label="Origin airport (IATA code)"
-            value={form.originIata}
-            onChange={(v) => set('originIata', v.toUpperCase())}
-            airport={origin}
-            placeholder="JFK"
+          <AirportPicker
+            label="Origin airport"
+            query={form.originQuery}
+            selected={origin}
+            onChangeQuery={(v) => setForm((f) => ({ ...f, originQuery: v, originIata: '' }))}
+            onSelect={(a) =>
+              setForm((f) => ({ ...f, originQuery: airportLabel(a), originIata: a.iata }))
+            }
+            placeholder="JFK, New York, Tokyo…"
           />
-          <AirportField
-            label="Destination airport (IATA code)"
-            value={form.destIata}
-            onChange={(v) => set('destIata', v.toUpperCase())}
-            airport={dest}
-            placeholder="NRT"
+          <AirportPicker
+            label="Destination airport"
+            query={form.destQuery}
+            selected={dest}
+            onChangeQuery={(v) => setForm((f) => ({ ...f, destQuery: v, destIata: '' }))}
+            onSelect={(a) =>
+              setForm((f) => ({ ...f, destQuery: airportLabel(a), destIata: a.iata }))
+            }
+            placeholder="NRT, Tokyo, London…"
           />
           <Field
             label="Departure date (YYYY-MM-DD)"
@@ -189,40 +200,72 @@ function Field({
   );
 }
 
-function AirportField({
+function airportLabel(a: Airport): string {
+  return `${a.iata} — ${a.city}`;
+}
+
+function AirportPicker({
   label,
-  value,
-  onChange,
-  airport,
+  query,
+  selected,
+  onChangeQuery,
+  onSelect,
   placeholder,
 }: {
   label: string;
-  value: string;
-  onChange: (v: string) => void;
-  airport?: Airport;
+  query: string;
+  selected?: Airport;
+  onChangeQuery: (v: string) => void;
+  onSelect: (a: Airport) => void;
   placeholder?: string;
 }) {
+  const [focused, setFocused] = useState(false);
+  const showList = focused && !selected && query.trim().length > 0;
+  const suggestions = useMemo(() => (showList ? searchAirports(query, 8) : []), [showList, query]);
+
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
         style={styles.input}
-        value={value}
-        onChangeText={(v) => onChange(v.slice(0, 3))}
-        autoCapitalize="characters"
+        value={query}
+        onChangeText={onChangeQuery}
         autoCorrect={false}
-        maxLength={3}
+        autoCapitalize="characters"
         placeholder={placeholder}
         placeholderTextColor="#4a527a"
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
       />
-      {airport ? (
+      {selected ? (
         <Text style={styles.hintGood}>
-          {airport.name} — {airport.city}, {airport.country} · {airport.tz}
+          {selected.name} — {selected.city}, {selected.country} · {selected.tz}
         </Text>
-      ) : value.length > 0 ? (
-        <Text style={styles.hintBad}>Not found</Text>
+      ) : query.length > 0 && suggestions.length === 0 && focused ? (
+        <Text style={styles.hintBad}>No matches — try an IATA code or city name</Text>
+      ) : !focused && query.length > 0 ? (
+        <Text style={styles.hintBad}>Pick an airport from the list</Text>
       ) : (
-        <Text style={styles.hint}>Enter a 3-letter IATA code</Text>
+        <Text style={styles.hint}>Type an airport code, city, or name</Text>
+      )}
+      {showList && suggestions.length > 0 && (
+        <View style={styles.suggestions}>
+          {suggestions.map((a) => (
+            <Pressable
+              key={a.iata}
+              style={({ pressed }) => [styles.suggestion, pressed && styles.suggestionPressed]}
+              onPress={() => onSelect(a)}
+            >
+              <Text style={styles.suggestionIata}>{a.iata}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.suggestionCity}>
+                  {a.city}, {a.country}
+                </Text>
+                <Text style={styles.suggestionName}>{a.name}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
       )}
     </View>
   );
@@ -337,6 +380,32 @@ const styles = StyleSheet.create({
   hint: { fontSize: 11, color: '#6b73a0', marginTop: 4 },
   hintGood: { fontSize: 11, color: '#7ee0a1', marginTop: 4 },
   hintBad: { fontSize: 11, color: '#ff9b9b', marginTop: 4 },
+  suggestions: {
+    marginTop: 6,
+    backgroundColor: '#0b1020',
+    borderColor: '#2a3160',
+    borderWidth: 1,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  suggestion: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomColor: '#1a2150',
+    borderBottomWidth: 1,
+    gap: 12,
+  },
+  suggestionPressed: { backgroundColor: '#1a2150' },
+  suggestionIata: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#a5b4fc',
+    width: 44,
+  },
+  suggestionCity: { fontSize: 14, color: '#fff' },
+  suggestionName: { fontSize: 11, color: '#9aa3c7', marginTop: 1 },
   error: { color: '#ff7676', marginVertical: 8 },
   results: {
     backgroundColor: '#1a2150',
