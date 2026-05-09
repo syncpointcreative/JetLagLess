@@ -54,6 +54,16 @@ const sleepDuration = (bedtime: number, wake: number): number => {
   return dur;
 };
 
+/**
+ * Returns the offset in hours of the given IANA timezone at the given date.
+ * Handles DST by using the actual instant.
+ */
+export function tzOffsetHours(timeZone: string, at: Date = new Date()): number {
+  const utc = new Date(at.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const tgt = new Date(at.toLocaleString('en-US', { timeZone }));
+  return (tgt.getTime() - utc.getTime()) / 3_600_000;
+}
+
 export function buildPlan(input: JetlagInput): JetlagPlan {
   const rawShift = input.destOffsetHours - input.homeOffsetHours;
   // Body adjusts along the shorter circadian path: a +14h trip is felt as -10h.
@@ -160,7 +170,6 @@ export function buildPlan(input: JetlagInput): JetlagPlan {
 
 function nightOverlap(startDestHr: number, endDestHr: number) {
   // Destination night defined as 22:00 -> 07:00 (9h window).
-  // Find the largest overlap of [startDestHr, endDestHr] with any night window.
   let best = { start: 0, duration: 0 };
   for (let dayOffset = -1; dayOffset <= 1; dayOffset++) {
     const nightStart = 22 + dayOffset * 24;
