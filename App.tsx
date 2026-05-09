@@ -90,6 +90,23 @@ export default function App() {
           prep your body.
         </Text>
 
+        <FlightLookup
+          onResolved={(r) => {
+            const originAirport = lookupAirport(r.origin.iata ?? '');
+            const destAirport = lookupAirport(r.destination.iata ?? '');
+            setForm((f) => ({
+              ...f,
+              originQuery: originAirport ? airportLabel(originAirport) : (r.origin.iata ?? ''),
+              originIata: r.origin.iata ?? '',
+              destQuery: destAirport ? airportLabel(destAirport) : (r.destination.iata ?? ''),
+              destIata: r.destination.iata ?? '',
+              departureDate: r.departure.localDate,
+              departureLocalTime: r.departure.localTime,
+              flightDurationHours: String(r.durationHours),
+            }));
+          }}
+        />
+
         <Section title="Flight">
           <AirportPicker
             label="Origin airport"
@@ -202,6 +219,85 @@ function Field({
 
 function airportLabel(a: Airport): string {
   return `${a.iata} — ${a.city}`;
+}
+
+interface FlightLookupResult {
+  ident: string;
+  origin: { iata: string | null; name: string | null; city: string | null; timezone: string };
+  destination: { iata: string | null; name: string | null; city: string | null; timezone: string };
+  departure: { utc: string; localDate: string; localTime: string };
+  arrival: { utc: string };
+  durationHours: number;
+}
+
+function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => void }) {
+  const [ident, setIdent] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [last, setLast] = useState<string | undefined>();
+
+  const submit = async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const url = `/api/flight?ident=${encodeURIComponent(ident.trim())}&date=${encodeURIComponent(date)}`;
+      const res = await fetch(url);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      onResolved(body as FlightLookupResult);
+      setLast(`${body.ident}: ${body.origin.iata} → ${body.destination.iata}`);
+    } catch (e: any) {
+      setError(e.message ?? 'Lookup failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Look up by flight number</Text>
+      <Text style={styles.hint}>Auto-fills the airports, date, time, and duration below.</Text>
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+        <View style={{ flex: 1.2 }}>
+          <Text style={styles.label}>Flight (e.g. AA178)</Text>
+          <TextInput
+            style={styles.input}
+            value={ident}
+            onChangeText={(v) => setIdent(v.toUpperCase())}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            placeholder="AA178"
+            placeholderTextColor="#4a527a"
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.label}>Date</Text>
+          <TextInput
+            style={styles.input}
+            value={date}
+            onChangeText={setDate}
+            autoCorrect={false}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor="#4a527a"
+          />
+        </View>
+      </View>
+      <Pressable
+        onPress={submit}
+        disabled={loading || ident.trim().length < 3}
+        style={({ pressed }) => [
+          styles.button,
+          (loading || ident.trim().length < 3) && styles.buttonDisabled,
+          pressed && styles.buttonPressed,
+        ]}
+      >
+        <Text style={styles.buttonText}>{loading ? 'Looking up…' : 'Look up flight'}</Text>
+      </Pressable>
+      {error && <Text style={styles.hintBad}>{error}</Text>}
+      {last && !error && <Text style={styles.hintGood}>Filled from {last}</Text>}
+    </View>
+  );
 }
 
 function AirportPicker({
@@ -406,6 +502,16 @@ const styles = StyleSheet.create({
   },
   suggestionCity: { fontSize: 14, color: '#fff' },
   suggestionName: { fontSize: 11, color: '#9aa3c7', marginTop: 1 },
+  button: {
+    backgroundColor: '#4f46e5',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  buttonPressed: { backgroundColor: '#4338ca' },
+  buttonDisabled: { backgroundColor: '#2a3160' },
+  buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   error: { color: '#ff7676', marginVertical: 8 },
   results: {
     backgroundColor: '#1a2150',
