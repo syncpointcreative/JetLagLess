@@ -13,11 +13,36 @@ export interface LegInput {
   arrivalUtc: Date;
 }
 
+export type PlaneSleepAbility = 'none' | 'poor' | 'okay' | 'good';
+export type BathroomFrequency = 'rare' | 'average' | 'often';
+export type MealStrategy = 'skip' | 'light' | 'regular';
+export type CaffeineSensitivity = 'low' | 'normal' | 'high';
+export type Chronotype = 'early' | 'neutral' | 'night';
+
+export interface PersonalProfile {
+  planeSleepAbility: PlaneSleepAbility;
+  bathroomFrequency: BathroomFrequency;
+  mealStrategy: MealStrategy;
+  caffeineSensitivity: CaffeineSensitivity;
+  alcoholOnFlights: boolean;
+  chronotype: Chronotype;
+}
+
+export const DEFAULT_PROFILE: PersonalProfile = {
+  planeSleepAbility: 'poor',
+  bathroomFrequency: 'average',
+  mealStrategy: 'light',
+  caffeineSensitivity: 'normal',
+  alcoholOnFlights: false,
+  chronotype: 'neutral',
+};
+
 export interface ItineraryInput {
   legs: LegInput[];
   usualBedtime: string;
   usualWakeTime: string;
   prepDaysAvailable: number;
+  profile?: PersonalProfile;
 }
 
 export interface LegPlan {
@@ -52,9 +77,12 @@ export interface ItineraryPlan {
   totalTravelHours: number;
   arrivalLocalTime: string;
   usualSleepDurationHours: number;
+  onboardSleepCapHours: number;
   preFlightShifts: { day: number; bedtime: string; wakeTime: string }[];
+  preFlightAdvice: string[];
   legs: LegPlan[];
   layovers: LayoverPlan[];
+  inflightAdvice: string[];
   arrivalAdvice: string[];
 }
 
@@ -131,13 +159,32 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
   const absShift = Math.abs(shift);
   const direction: Direction = shift > 0 ? 'east' : shift < 0 ? 'west' : 'none';
 
-  const adjustRate = direction === 'east' ? 1.0 : 1.5;
-  const daysToFullyAdjust = Math.ceil(absShift / adjustRate);
+  const profile = input.profile ?? DEFAULT_PROFILE;
+
+  // Eastward (advance) is harder than westward (delay). Chronotype tilts the
+  // rate: night owls naturally drift later, so westward is a bit easier and
+  // eastward harder; early birds the opposite.
+  let baseRate = direction === 'east' ? 1.0 : 1.5;
+  if (profile.chronotype === 'night') {
+    baseRate *= direction === 'east' ? 0.85 : 1.15;
+  } else if (profile.chronotype === 'early') {
+    baseRate *= direction === 'east' ? 1.15 : 0.85;
+  }
+  const adjustRate = baseRate;
+  const daysToFullyAdjust = Math.max(1, Math.ceil(absShift / adjustRate));
   const severity: Severity = absShift < 3 ? 'mild' : absShift < 7 ? 'moderate' : 'severe';
 
   const usualBed = parseTime(input.usualBedtime);
   const usualWake = parseTime(input.usualWakeTime);
   const usualSleepDurationHours = sleepDuration(usualBed, usualWake);
+
+  const planeSleepFactor: Record<PlaneSleepAbility, number> = {
+    none: 0,
+    poor: 0.4,
+    okay: 0.7,
+    good: 1.0,
+  };
+  const onboardSleepCapHours = usualSleepDurationHours * planeSleepFactor[profile.planeSleepAbility];
 
   // Pre-flight gradual shift toward destination time.
   const days = Math.min(input.prepDaysAvailable, daysToFullyAdjust);
@@ -164,7 +211,7 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
 
   // Allocate sleep budget greedily to the legs with biggest night overlap.
   const sortedByOverlap = [...legCandidates].sort((a, b) => b.overlap.duration - a.overlap.duration);
-  let remainingBudget = usualSleepDurationHours;
+  let remainingBudget = onboardSleepCapHours;
   const allocated = new Map<number, number>();
   for (const c of sortedByOverlap) {
     if (remainingBudget <= 0) break;
@@ -270,6 +317,9 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
   }
   arrivalAdvice.push('Hydrate aggressively; cabin air dehydrates and worsens jetlag symptoms.');
 
+  const inflightAdvice = buildInflightAdvice(profile, legs, onboardSleepCapHours);
+  const preFlightAdvice = buildPreFlightAdvice(profile, direction);
+
   return {
     shiftHours: shift,
     direction,
@@ -278,9 +328,94 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
     totalTravelHours,
     arrivalLocalTime,
     usualSleepDurationHours,
+    onboardSleepCapHours,
     preFlightShifts,
+    preFlightAdvice,
     legs,
     layovers,
+    inflightAdvice,
     arrivalAdvice,
   };
+}
+
+function buildInflightAdvice(
+  profile: PersonalProfile,
+  legs: LegPlan[],
+  onboardSleepCapHours: number,
+): string[] {
+  const advice: string[] = [];
+  const firstSleep = legs.find((l) => l.onboardSleep.shouldSleep);
+
+  // Caffeine
+  const cutoffHours = profile.caffeineSensitivity === 'high'
+    ? 8
+    : profile.caffeineSensitivity === 'low'
+      ? 4
+      : 6;
+  if (firstSleep) {
+    const sleepStart = parseTime(firstSleep.onboardSleep.sleepAtFinalDestLocal);
+    const cutoffLocal = fmt(sleepStart - cutoffHours);
+    advice.push(
+      `Caffeine cutoff: no coffee/tea after ${cutoffLocal} (final-destination time) — that's ${cutoffHours}h before your sleep window.`,
+    );
+  } else if (onboardSleepCapHours === 0) {
+    advice.push('No onboard sleep planned — caffeine is fine in moderation, but stop 6h before destination bedtime.');
+  }
+
+  // Alcohol
+  if (profile.alcoholOnFlights) {
+    advice.push('Skip the in-flight wine. Alcohol fragments deep sleep and the dry cabin amplifies dehydration.');
+  } else {
+    advice.push('Continue avoiding alcohol — it disrupts sleep architecture and worsens cabin dehydration.');
+  }
+
+  // Hydration / bathroom
+  if (profile.bathroomFrequency === 'often') {
+    advice.push('Take an aisle seat. Sip water steadily but stop drinking ~3h before any sleep window.');
+  } else if (profile.bathroomFrequency === 'average') {
+    advice.push('Drink ~1 cup of water per flight hour; switch to small sips ~2h before any sleep window.');
+  } else {
+    advice.push('Drink ~1 cup of water per flight hour; cabin air dehydrates faster than you think.');
+  }
+
+  // Meals
+  if (profile.mealStrategy === 'skip') {
+    advice.push('Skipping meals is fine — fasting actually helps the circadian shift. Just keep hydrating.');
+  } else if (profile.mealStrategy === 'light') {
+    advice.push('Eat light. Skip any in-flight meal that falls during your destination\'s nighttime.');
+  } else {
+    advice.push('Eat on your destination\'s clock: take meals at destination breakfast/lunch/dinner times, skip ones served during destination night.');
+  }
+
+  // Plane sleep ability override
+  if (profile.planeSleepAbility === 'none') {
+    advice.push('You said you can\'t sleep on planes — don\'t fight it. Use eye mask + earplugs to rest, and bank sleep before/after.');
+  } else if (profile.planeSleepAbility === 'poor') {
+    advice.push('Tip for poor plane sleepers: eye mask, earplugs, neck pillow, recline as much as possible, and don\'t check the time.');
+  }
+
+  return advice;
+}
+
+function buildPreFlightAdvice(profile: PersonalProfile, direction: Direction): string[] {
+  const advice: string[] = [];
+  const cutoffHours = profile.caffeineSensitivity === 'high'
+    ? 10
+    : profile.caffeineSensitivity === 'low'
+      ? 6
+      : 8;
+  advice.push(
+    `On each prep day, no caffeine within ${cutoffHours}h of your shifted bedtime.`,
+  );
+  if (direction === 'east') {
+    advice.push('Get morning sunlight on prep days; dim screens after dinner.');
+  } else if (direction === 'west') {
+    advice.push('Get evening sunlight on prep days; avoid bright morning light.');
+  }
+  if (profile.chronotype === 'night' && direction === 'east') {
+    advice.push('Heads-up: as a night owl going east, expect this to feel rougher than the schedule suggests. Be strict on the prep schedule.');
+  } else if (profile.chronotype === 'early' && direction === 'west') {
+    advice.push('Heads-up: as an early bird going west, staying up later will feel unnatural. Use evening light to push yourself.');
+  }
+  return advice;
 }
