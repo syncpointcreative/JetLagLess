@@ -10,8 +10,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
-import { readJson, storage, writeJson } from './src/lib/storage';
+import { readJson, readJsonSync, storage, writeJson } from './src/lib/storage';
 import {
   BathroomFrequency,
   buildItineraryPlan,
@@ -135,8 +136,7 @@ interface SavedTrip {
   prepDaysAvailable: string;
 }
 
-function hydrateDraft(): FormState {
-  const saved = readJson<Partial<FormState>>(DRAFT_KEY);
+function applyDraft(saved: Partial<FormState> | undefined): FormState {
   if (!saved || !Array.isArray(saved.legs) || saved.legs.length === 0) return initial;
   return {
     legs: saved.legs.map((l) => ({ ...emptyLeg(), ...l })),
@@ -147,25 +147,47 @@ function hydrateDraft(): FormState {
   };
 }
 
+/** API base URL. Empty string = same origin (web build). On native, set
+ * EXPO_PUBLIC_API_BASE in .env (e.g. https://your-vercel.vercel.app). */
+const API_BASE = (process.env.EXPO_PUBLIC_API_BASE ?? '').replace(/\/$/, '');
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
 export default function App() {
-  const [form, setForm] = useState<FormState>(() => hydrateDraft());
-  const [savedTrips, setSavedTrips] = useState<Record<string, SavedTrip>>(
-    () => readJson<Record<string, SavedTrip>>(TRIPS_KEY) ?? {},
-  );
+  // Web can read localStorage synchronously; native must hydrate via async
+  // AsyncStorage after first paint.
+  const [form, setForm] = useState<FormState>(() => {
+    if (Platform.OS === 'web') return applyDraft(readJsonSync<Partial<FormState>>(DRAFT_KEY));
+    return initial;
+  });
+  const [savedTrips, setSavedTrips] = useState<Record<string, SavedTrip>>(() => {
+    if (Platform.OS === 'web') return readJsonSync<Record<string, SavedTrip>>(TRIPS_KEY) ?? {};
+    return {};
+  });
   const [showPlan, setShowPlan] = useState(false);
 
   useEffect(() => {
-    const handle = setTimeout(() => writeJson(DRAFT_KEY, form), 400);
+    if (Platform.OS === 'web') return;
+    void (async () => {
+      const draft = await readJson<Partial<FormState>>(DRAFT_KEY);
+      if (draft) setForm(applyDraft(draft));
+      const trips = await readJson<Record<string, SavedTrip>>(TRIPS_KEY);
+      if (trips) setSavedTrips(trips);
+    })();
+  }, []);
+
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      void writeJson(DRAFT_KEY, form);
+    }, 400);
     return () => clearTimeout(handle);
   }, [form]);
 
   const persistTrips = (next: Record<string, SavedTrip>) => {
     setSavedTrips(next);
-    writeJson(TRIPS_KEY, next);
+    void writeJson(TRIPS_KEY, next);
   };
   const saveCurrentAs = (name: string) => {
     const trimmed = name.trim();
@@ -202,6 +224,7 @@ export default function App() {
   const clearAll = () => {
     setForm(initial);
     storage.remove(DRAFT_KEY);
+    void writeJson(TRIPS_KEY, savedTrips);
     setShowPlan(false);
   };
 
@@ -641,7 +664,7 @@ function FlightLookup({
     setLoading(true);
     setError(undefined);
     try {
-      const url = `/api/flight?ident=${encodeURIComponent(ident.trim())}&date=${encodeURIComponent(date)}`;
+      const url = `${API_BASE}/api/flight?ident=${encodeURIComponent(ident.trim())}&date=${encodeURIComponent(date)}`;
       const res = await fetch(url);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
@@ -728,12 +751,79 @@ function PickerField({
     );
   }
   return (
-    <Field
+    <NativePickerField
       label={label}
       value={value}
       onChange={onChange}
-      placeholder={placeholder ?? (type === 'date' ? 'YYYY-MM-DD' : 'HH:MM')}
+      type={type}
+      placeholder={placeholder}
     />
+  );
+}
+
+function NativePickerField({
+  label,
+  value,
+  onChange,
+  type,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type: 'date' | 'time';
+  placeholder?: string;
+}) {
+  const [show, setShow] = useState(false);
+
+  // Build a Date from the current string. Falls back to "now" if missing.
+  const current = useMemo(() => {
+    const now = new Date();
+    if (type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [y, m, d] = value.split('-').map((n) => parseInt(n, 10));
+      return new Date(y, m - 1, d, 12, 0, 0);
+    }
+    if (type === 'time' && /^\d{2}:\d{2}$/.test(value)) {
+      const [h, m] = value.split(':').map((n) => parseInt(n, 10));
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      return d;
+    }
+    return now;
+  }, [value, type]);
+
+  const display = value || (placeholder ?? (type === 'date' ? 'Pick a date' : 'Pick a time'));
+
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <Pressable onPress={() => setShow(true)} style={styles.input}>
+        <Text style={{ color: value ? C.ink : C.inkMuted, fontSize: 15, fontFamily: SANS }}>
+          {display}
+        </Text>
+      </Pressable>
+      {show && (
+        <DateTimePicker
+          value={current}
+          mode={type}
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={(_event, picked) => {
+            if (Platform.OS !== 'ios') setShow(false);
+            if (!picked) return;
+            if (type === 'date') {
+              const y = picked.getFullYear();
+              const m = String(picked.getMonth() + 1).padStart(2, '0');
+              const d = String(picked.getDate()).padStart(2, '0');
+              onChange(`${y}-${m}-${d}`);
+            } else {
+              const h = String(picked.getHours()).padStart(2, '0');
+              const m = String(picked.getMinutes()).padStart(2, '0');
+              onChange(`${h}:${m}`);
+            }
+          }}
+        />
+      )}
+    </View>
   );
 }
 
