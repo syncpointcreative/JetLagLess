@@ -1298,8 +1298,8 @@ function Block({
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: C.bg },
   container: {
-    paddingHorizontal: 24,
-    paddingTop: 64,
+    paddingHorizontal: 18,
+    paddingTop: 56,
     paddingBottom: 80,
     maxWidth: 720,
     width: '100%',
@@ -1399,7 +1399,7 @@ const styles = StyleSheet.create({
   sectionBody: {
     backgroundColor: C.surface,
     borderRadius: 14,
-    padding: 22,
+    padding: 18,
     borderColor: C.rule,
     borderWidth: 1,
   },
@@ -1407,7 +1407,7 @@ const styles = StyleSheet.create({
   // Inputs
   field: { marginBottom: 16 },
   row2: { flexDirection: 'row', gap: 12 },
-  col: { flex: 1 },
+  col: { flex: 1, minWidth: 0 },
   label: {
     fontFamily: SANS,
     fontSize: 11,
@@ -1456,7 +1456,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: C.accent,
-    width: 44,
+    minWidth: 38,
     letterSpacing: 0.5,
   },
   suggestionCity: { fontFamily: SANS, fontSize: 14, color: C.ink, fontWeight: '500' },
