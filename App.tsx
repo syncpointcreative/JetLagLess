@@ -68,10 +68,19 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
     const style = document.createElement('style');
     style.textContent = `
       html, body, #root { background: ${C.bg}; }
-      body { font-family: ${SANS}; color: ${C.ink}; }
+      body { font-family: ${SANS}; color: ${C.ink}; margin: 0; }
       input, button, textarea { font-family: ${SANS}; }
       input:focus { outline: none; border-color: ${C.accent} !important; }
       input::-webkit-calendar-picker-indicator { filter: invert(0.4) sepia(1) saturate(2) hue-rotate(345deg); cursor: pointer; }
+      input[type="date"], input[type="time"] {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+        -webkit-appearance: none !important;
+        appearance: none !important;
+        -webkit-min-logical-width: 0 !important;
+      }
       ::selection { background: ${C.accentSoft}; color: ${C.ink}; }
       * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
     `;
@@ -846,8 +855,8 @@ const webInputStyle: any = {
   borderWidth: 1,
   borderStyle: 'solid',
   borderRadius: 8,
-  paddingLeft: 14,
-  paddingRight: 14,
+  paddingLeft: 12,
+  paddingRight: 12,
   paddingTop: 11,
   paddingBottom: 11,
   color: C.ink,
@@ -855,8 +864,13 @@ const webInputStyle: any = {
   fontFamily: SANS,
   outline: 'none',
   width: '100%',
+  minWidth: 0,
+  maxWidth: '100%',
   boxSizing: 'border-box',
   colorScheme: 'light',
+  WebkitAppearance: 'none',
+  appearance: 'none',
+  display: 'block',
   transition: 'border-color 120ms ease',
 };
 
