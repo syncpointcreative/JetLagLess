@@ -11,7 +11,18 @@ import {
   View,
 } from 'react-native';
 import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
-import { buildItineraryPlan, ItineraryPlan, LegInput } from './src/lib/jetlag';
+import {
+  BathroomFrequency,
+  buildItineraryPlan,
+  CaffeineSensitivity,
+  Chronotype,
+  DEFAULT_PROFILE,
+  ItineraryPlan,
+  LegInput,
+  MealStrategy,
+  PersonalProfile,
+  PlaneSleepAbility,
+} from './src/lib/jetlag';
 
 interface LegForm {
   id: string;
@@ -29,6 +40,7 @@ interface FormState {
   usualBedtime: string;
   usualWakeTime: string;
   prepDaysAvailable: string;
+  profile: PersonalProfile;
 }
 
 const newLegId = () => Math.random().toString(36).slice(2, 9);
@@ -64,6 +76,7 @@ const initial: FormState = {
   usualBedtime: '23:00',
   usualWakeTime: '07:00',
   prepDaysAvailable: '3',
+  profile: DEFAULT_PROFILE,
 };
 
 function todayISO(): string {
@@ -78,6 +91,8 @@ export default function App() {
   const addLeg = () => setForm((f) => ({ ...f, legs: [...f.legs, emptyLeg()] }));
   const removeLeg = (id: string) =>
     setForm((f) => ({ ...f, legs: f.legs.length > 1 ? f.legs.filter((l) => l.id !== id) : f.legs }));
+  const updateProfile = (patch: Partial<PersonalProfile>) =>
+    setForm((f) => ({ ...f, profile: { ...f.profile, ...patch } }));
 
   const { plan, error } = useMemo<{ plan?: ItineraryPlan; error?: string }>(() => {
     try {
@@ -107,6 +122,7 @@ export default function App() {
           usualBedtime: form.usualBedtime,
           usualWakeTime: form.usualWakeTime,
           prepDaysAvailable: parseInt(form.prepDaysAvailable, 10) || 0,
+          profile: form.profile,
         }),
       };
     } catch (e: any) {
@@ -190,6 +206,69 @@ export default function App() {
             value={form.prepDaysAvailable}
             onChange={(v) => setForm((f) => ({ ...f, prepDaysAvailable: v }))}
             keyboardType="number-pad"
+          />
+        </Section>
+
+        <Section title="About you">
+          <Segmented<Chronotype>
+            label="When do you feel most alert?"
+            value={form.profile.chronotype}
+            options={[
+              { value: 'early', label: 'Mornings' },
+              { value: 'neutral', label: 'Mixed' },
+              { value: 'night', label: 'Evenings' },
+            ]}
+            onChange={(v) => updateProfile({ chronotype: v })}
+          />
+          <Segmented<PlaneSleepAbility>
+            label="How well do you sleep on planes?"
+            value={form.profile.planeSleepAbility}
+            options={[
+              { value: 'none', label: 'Not at all' },
+              { value: 'poor', label: 'Poorly' },
+              { value: 'okay', label: 'Okay' },
+              { value: 'good', label: 'Easily' },
+            ]}
+            onChange={(v) => updateProfile({ planeSleepAbility: v })}
+          />
+          <Segmented<BathroomFrequency>
+            label="Bathroom frequency"
+            value={form.profile.bathroomFrequency}
+            options={[
+              { value: 'rare', label: 'Rare' },
+              { value: 'average', label: 'Average' },
+              { value: 'often', label: 'Often' },
+            ]}
+            onChange={(v) => updateProfile({ bathroomFrequency: v })}
+          />
+          <Segmented<MealStrategy>
+            label="In-flight meals"
+            value={form.profile.mealStrategy}
+            options={[
+              { value: 'skip', label: 'Skip' },
+              { value: 'light', label: 'Light' },
+              { value: 'regular', label: 'Regular' },
+            ]}
+            onChange={(v) => updateProfile({ mealStrategy: v })}
+          />
+          <Segmented<CaffeineSensitivity>
+            label="Caffeine sensitivity"
+            value={form.profile.caffeineSensitivity}
+            options={[
+              { value: 'low', label: 'Low' },
+              { value: 'normal', label: 'Normal' },
+              { value: 'high', label: 'High' },
+            ]}
+            onChange={(v) => updateProfile({ caffeineSensitivity: v })}
+          />
+          <Segmented<boolean>
+            label="Do you usually drink alcohol on flights?"
+            value={form.profile.alcoholOnFlights}
+            options={[
+              { value: false, label: 'No' },
+              { value: true, label: 'Yes' },
+            ]}
+            onChange={(v) => updateProfile({ alcoholOnFlights: v })}
           />
         </Section>
 
@@ -440,6 +519,46 @@ function FlightLookup({
   );
 }
 
+function Segmented<T>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.segmented}>
+        {options.map((opt, i) => {
+          const active = opt.value === value;
+          return (
+            <Pressable
+              key={i}
+              onPress={() => onChange(opt.value)}
+              style={({ pressed }) => [
+                styles.segment,
+                active && styles.segmentActive,
+                pressed && !active && styles.segmentPressed,
+                i === 0 && styles.segmentFirst,
+                i === options.length - 1 && styles.segmentLast,
+              ]}
+            >
+              <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
@@ -569,7 +688,14 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
         <Summary label="Full adjust" value={`~${plan.daysToFullyAdjust}d`} />
         <Summary label="Total travel" value={`${plan.totalTravelHours.toFixed(1)}h`} />
         <Summary label="Arrives at" value={plan.arrivalLocalTime} />
-        <Summary label="Sleep target" value={`${plan.usualSleepDurationHours.toFixed(1)}h`} />
+        <Summary
+          label="Onboard sleep"
+          value={
+            plan.onboardSleepCapHours > 0
+              ? `up to ${plan.onboardSleepCapHours.toFixed(1)}h`
+              : 'skip'
+          }
+        />
       </View>
 
       {plan.legs.map((lp) => {
@@ -620,12 +746,27 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
         );
       })}
 
-      {plan.preFlightShifts.length > 0 && (
-        <Block title="Pre-flight shift schedule">
+      {plan.inflightAdvice.length > 0 && (
+        <Block title="In-flight habits">
+          {plan.inflightAdvice.map((a, i) => (
+            <Text key={i} style={styles.body}>
+              • {a}
+            </Text>
+          ))}
+        </Block>
+      )}
+
+      {(plan.preFlightShifts.length > 0 || plan.preFlightAdvice.length > 0) && (
+        <Block title="Before you fly">
           {plan.preFlightShifts.map((s) => (
             <Text key={s.day} style={styles.body}>
               <Text style={styles.bold}>Day -{plan.preFlightShifts.length - s.day + 1}:</Text> bed{' '}
               {s.bedtime} → wake {s.wakeTime}
+            </Text>
+          ))}
+          {plan.preFlightAdvice.map((a, i) => (
+            <Text key={`adv-${i}`} style={styles.body}>
+              • {a}
             </Text>
           ))}
         </Block>
@@ -770,4 +911,26 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   layoverTitle: { fontSize: 13, fontWeight: '700', color: '#fff', marginBottom: 4 },
+  segmented: {
+    flexDirection: 'row',
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderColor: '#2a3160',
+    borderWidth: 1,
+  },
+  segment: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    backgroundColor: '#0b1020',
+    borderLeftColor: '#2a3160',
+    borderLeftWidth: 1,
+  },
+  segmentFirst: { borderLeftWidth: 0 },
+  segmentLast: {},
+  segmentActive: { backgroundColor: '#4f46e5' },
+  segmentPressed: { backgroundColor: '#1a2150' },
+  segmentText: { fontSize: 13, color: '#9aa3c7', fontWeight: '500' },
+  segmentTextActive: { color: '#fff', fontWeight: '700' },
 });
