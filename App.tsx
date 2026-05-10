@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -63,16 +63,7 @@ function sampleLeg(over: Partial<LegForm>): LegForm {
 }
 
 const initial: FormState = {
-  legs: [
-    sampleLeg({
-      originQuery: 'JFK — New York',
-      originIata: 'JFK',
-      destQuery: 'NRT — Tokyo',
-      destIata: 'NRT',
-      departureLocalTime: '18:30',
-      flightDurationHours: '13.5',
-    }),
-  ],
+  legs: [emptyLeg()],
   usualBedtime: '23:00',
   usualWakeTime: '07:00',
   prepDaysAvailable: '3',
@@ -143,7 +134,8 @@ export default function App() {
         </Text>
 
         <FlightLookup
-          onResolved={(r, addAsNewLeg) => {
+          buttonLabel={hasMeaningfulLeg(form.legs) ? 'Add flight to itinerary' : 'Use this flight'}
+          onResolved={(r) => {
             const leg = sampleLeg({
               originQuery: r.origin.iata
                 ? `${r.origin.iata}${r.origin.city ? ` — ${r.origin.city}` : ''}`
@@ -158,18 +150,14 @@ export default function App() {
               flightDurationHours: String(r.durationHours),
             });
             setForm((f) => {
-              if (addAsNewLeg) {
-                const next = [...f.legs, leg];
-                return { ...f, legs: sortLegsByDeparture(next) };
+              // If the only existing leg is the empty starter, silently swap it
+              // for the looked-up flight; otherwise append.
+              if (f.legs.length === 1 && !isMeaningfulLeg(f.legs[0])) {
+                return { ...f, legs: [{ ...leg, id: f.legs[0].id }] };
               }
-              const replaceId = f.legs[0].id;
-              return {
-                ...f,
-                legs: sortLegsByDeparture([{ ...leg, id: replaceId }, ...f.legs.slice(1)]),
-              };
+              return { ...f, legs: sortLegsByDeparture([...f.legs, leg]) };
             });
           }}
-          hasLegs={form.legs.length > 0}
         />
 
         {form.legs.map((leg, i) => (
@@ -314,6 +302,14 @@ function sortLegsByDeparture(legs: LegForm[]): LegForm[] {
   return [...legs].sort((a, b) => legDepartureMs(a) - legDepartureMs(b));
 }
 
+function isMeaningfulLeg(l: LegForm): boolean {
+  return Boolean(l.originIata || l.destIata || l.flightDurationHours || l.departureLocalTime);
+}
+
+function hasMeaningfulLeg(legs: LegForm[]): boolean {
+  return legs.some(isMeaningfulLeg);
+}
+
 function formatDateInTz(d: Date, tz: string): string | undefined {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -376,15 +372,17 @@ function LegSection({
       />
       <View style={styles.row2}>
         <View style={styles.col}>
-          <Field
-            label="Date (YYYY-MM-DD)"
+          <PickerField
+            label="Departure date"
+            type="date"
             value={leg.departureDate}
             onChange={(v) => onChange({ departureDate: v })}
           />
         </View>
         <View style={styles.col}>
-          <Field
-            label="Time (HH:MM)"
+          <PickerField
+            label="Departure time"
+            type="time"
             value={leg.departureLocalTime}
             onChange={(v) => onChange({ departureLocalTime: v })}
           />
@@ -415,10 +413,10 @@ interface FlightLookupResult {
 
 function FlightLookup({
   onResolved,
-  hasLegs,
+  buttonLabel,
 }: {
-  onResolved: (r: FlightLookupResult, addAsNewLeg: boolean) => void;
-  hasLegs: boolean;
+  onResolved: (r: FlightLookupResult) => void;
+  buttonLabel: string;
 }) {
   const [ident, setIdent] = useState('');
   const [date, setDate] = useState(todayISO());
@@ -426,7 +424,9 @@ function FlightLookup({
   const [error, setError] = useState<string | undefined>();
   const [last, setLast] = useState<string | undefined>();
 
-  const submit = async (addAsNewLeg: boolean) => {
+  const disabled = loading || ident.trim().length < 3;
+
+  const submit = async () => {
     setLoading(true);
     setError(undefined);
     try {
@@ -434,11 +434,9 @@ function FlightLookup({
       const res = await fetch(url);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      onResolved(body as FlightLookupResult, addAsNewLeg);
+      onResolved(body as FlightLookupResult);
       setLast(`${body.ident}: ${body.origin.iata} → ${body.destination.iata}`);
       setIdent('');
-      // Advance the lookup date to this flight's arrival date so the next
-      // lookup defaults to "after this leg lands."
       const arrLocalDate = formatDateInTz(
         new Date(body.arrival.utc),
         body.destination.timezone,
@@ -454,9 +452,9 @@ function FlightLookup({
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Look up by flight number</Text>
-      <Text style={styles.hint}>Auto-fills airport, date, time, and duration.</Text>
-      <View style={styles.row2}>
-        <View style={[styles.col, { flex: 1.2 }]}>
+      <Text style={styles.hint}>Auto-fills airport, date, time, and duration below.</Text>
+      <View style={[styles.row2, { marginTop: 10 }]}>
+        <View style={[styles.col, { flex: 1.3 }]}>
           <Text style={styles.label}>Flight (e.g. AA178)</Text>
           <TextInput
             style={styles.input}
@@ -466,55 +464,26 @@ function FlightLookup({
             autoCorrect={false}
             placeholder="AA178"
             placeholderTextColor="#4a527a"
+            onSubmitEditing={() => !disabled && submit()}
           />
         </View>
         <View style={styles.col}>
-          <Text style={styles.label}>Date</Text>
-          <TextInput
-            style={styles.input}
-            value={date}
-            onChangeText={setDate}
-            autoCorrect={false}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor="#4a527a"
-          />
+          <PickerField label="Date" type="date" value={date} onChange={setDate} />
         </View>
       </View>
-      <View style={styles.row2}>
-        <View style={styles.col}>
-          <Pressable
-            onPress={() => submit(false)}
-            disabled={loading || ident.trim().length < 3}
-            style={({ pressed }) => [
-              styles.button,
-              (loading || ident.trim().length < 3) && styles.buttonDisabled,
-              pressed && styles.buttonPressed,
-            ]}
-          >
-            <Text style={styles.buttonText}>
-              {loading ? 'Looking up…' : 'Replace leg 1'}
-            </Text>
-          </Pressable>
-        </View>
-        {hasLegs && (
-          <View style={styles.col}>
-            <Pressable
-              onPress={() => submit(true)}
-              disabled={loading || ident.trim().length < 3}
-              style={({ pressed }) => [
-                styles.secondaryButton,
-                { marginTop: 0 },
-                (loading || ident.trim().length < 3) && styles.buttonDisabled,
-                pressed && styles.secondaryPressed,
-              ]}
-            >
-              <Text style={styles.secondaryText}>Add as new leg</Text>
-            </Pressable>
-          </View>
-        )}
-      </View>
+      <Pressable
+        onPress={submit}
+        disabled={disabled}
+        style={({ pressed }) => [
+          styles.button,
+          disabled && styles.buttonDisabled,
+          pressed && !disabled && styles.buttonPressed,
+        ]}
+      >
+        <Text style={styles.buttonText}>{loading ? 'Looking up…' : buttonLabel}</Text>
+      </Pressable>
       {error && <Text style={styles.hintBad}>{error}</Text>}
-      {last && !error && <Text style={styles.hintGood}>Filled from {last}</Text>}
+      {last && !error && <Text style={styles.hintGood}>Added {last}</Text>}
     </View>
   );
 }
@@ -558,6 +527,66 @@ function Segmented<T>({
     </View>
   );
 }
+
+/**
+ * On web, render the browser's native date/time picker via a real <input>.
+ * Falls back to a plain TextInput on native — DateTimePicker is a native-only
+ * dependency we can layer in later if we publish a native build.
+ */
+function PickerField({
+  label,
+  value,
+  onChange,
+  type,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type: 'date' | 'time';
+  placeholder?: string;
+}) {
+  if (Platform.OS === 'web') {
+    return (
+      <View style={styles.field}>
+        <Text style={styles.label}>{label}</Text>
+        {React.createElement('input', {
+          type,
+          value,
+          onChange: (e: any) => onChange(e.target.value),
+          style: webInputStyle,
+        })}
+      </View>
+    );
+  }
+  return (
+    <Field
+      label={label}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder ?? (type === 'date' ? 'YYYY-MM-DD' : 'HH:MM')}
+    />
+  );
+}
+
+const webInputStyle: any = {
+  backgroundColor: '#0b1020',
+  borderColor: '#2a3160',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderRadius: 8,
+  paddingLeft: 12,
+  paddingRight: 12,
+  paddingTop: 10,
+  paddingBottom: 10,
+  color: '#fff',
+  fontSize: 15,
+  fontFamily: 'inherit',
+  outline: 'none',
+  width: '100%',
+  boxSizing: 'border-box',
+  colorScheme: 'dark',
+};
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
