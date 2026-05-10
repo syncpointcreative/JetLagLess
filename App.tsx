@@ -142,11 +142,14 @@ export default function App() {
               flightDurationHours: String(r.durationHours),
             });
             setForm((f) => {
-              if (addAsNewLeg) return { ...f, legs: [...f.legs, leg] };
+              if (addAsNewLeg) {
+                const next = [...f.legs, leg];
+                return { ...f, legs: sortLegsByDeparture(next) };
+              }
               const replaceId = f.legs[0].id;
               return {
                 ...f,
-                legs: [{ ...leg, id: replaceId }, ...f.legs.slice(1)],
+                legs: sortLegsByDeparture([{ ...leg, id: replaceId }, ...f.legs.slice(1)]),
               };
             });
           }}
@@ -219,6 +222,36 @@ function tzOffsetMs(tz: string, at: Date): number {
   const utc = new Date(at.toLocaleString('en-US', { timeZone: 'UTC' }));
   const tgt = new Date(at.toLocaleString('en-US', { timeZone: tz }));
   return tgt.getTime() - utc.getTime();
+}
+
+function legDepartureMs(l: LegForm): number {
+  const o = lookupAirport(l.originIata);
+  if (!o || !l.departureDate || !l.departureLocalTime) return Number.MAX_SAFE_INTEGER;
+  const t = localToUtc(l.departureDate, l.departureLocalTime, o.tz).getTime();
+  return isFinite(t) ? t : Number.MAX_SAFE_INTEGER;
+}
+
+function sortLegsByDeparture(legs: LegForm[]): LegForm[] {
+  return [...legs].sort((a, b) => legDepartureMs(a) - legDepartureMs(b));
+}
+
+function formatDateInTz(d: Date, tz: string): string | undefined {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    const y = get('year');
+    const m = get('month');
+    const day = get('day');
+    if (!y || !m || !day) return undefined;
+    return `${y}-${m}-${day}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function LegSection({
@@ -324,6 +357,14 @@ function FlightLookup({
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       onResolved(body as FlightLookupResult, addAsNewLeg);
       setLast(`${body.ident}: ${body.origin.iata} → ${body.destination.iata}`);
+      setIdent('');
+      // Advance the lookup date to this flight's arrival date so the next
+      // lookup defaults to "after this leg lands."
+      const arrLocalDate = formatDateInTz(
+        new Date(body.arrival.utc),
+        body.destination.timezone,
+      );
+      if (arrLocalDate) setDate(arrLocalDate);
     } catch (e: any) {
       setError(e.message ?? 'Lookup failed.');
     } finally {
