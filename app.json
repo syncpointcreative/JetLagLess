@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#f4ecdd"
     },
     "ios": {
       "supportsTablet": true
@@ -18,13 +18,19 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#f4ecdd"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "JetLagLess — Travel sleep planner",
+      "shortName": "JetLagLess",
+      "description": "A circadian playbook tailored to your flight, your sleep habits, and how your body handles travel.",
+      "themeColor": "#1a2945",
+      "backgroundColor": "#f4ecdd"
     }
   }
 }
+
