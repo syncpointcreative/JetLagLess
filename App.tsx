@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -153,6 +154,18 @@ const API_BASE = (process.env.EXPO_PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function useStackedRow() {
+  const { width } = useWindowDimensions();
+  return width < 460;
+}
+
+function Row({ children, style }: { children: React.ReactNode; style?: any }) {
+  const stacked = useStackedRow();
+  return (
+    <View style={[stacked ? styles.rowStacked : styles.row2, style]}>{children}</View>
+  );
 }
 
 export default function App() {
@@ -359,7 +372,7 @@ export default function App() {
           title="Your usual sleep"
           subtitle="What does a normal night at home look like? We'll shift this gradually toward your destination's clock."
         >
-          <View style={styles.row2}>
+          <Row>
             <View style={styles.col}>
               <PickerField
                 label="Usual bedtime"
@@ -376,7 +389,7 @@ export default function App() {
                 onChange={(v) => setForm((f) => ({ ...f, usualWakeTime: v }))}
               />
             </View>
-          </View>
+          </Row>
           <Field
             label="Days available to prep before flight"
             value={form.prepDaysAvailable}
@@ -604,7 +617,7 @@ function LegSection({
         onSelect={(a) => onChange({ destQuery: airportLabel(a), destIata: a.iata })}
         placeholder="NRT, Tokyo…"
       />
-      <View style={styles.row2}>
+      <Row>
         <View style={styles.col}>
           <PickerField
             label="Departure date"
@@ -621,7 +634,7 @@ function LegSection({
             onChange={(v) => onChange({ departureLocalTime: v })}
           />
         </View>
-      </View>
+      </Row>
       <Field
         label="Flight duration (hours)"
         value={leg.flightDurationHours}
@@ -689,8 +702,8 @@ function FlightLookup({
         <Text style={styles.lookupTitle}>Look up by flight number</Text>
       </View>
       <Text style={styles.lookupHint}>Auto-fills airports, date, time, and duration.</Text>
-      <View style={[styles.row2, { marginTop: 12 }]}>
-        <View style={[styles.col, { flex: 1.3 }]}>
+      <Row style={{ marginTop: 12 }}>
+        <View style={styles.col}>
           <Text style={styles.label}>Flight</Text>
           <TextInput
             style={styles.input}
@@ -706,7 +719,7 @@ function FlightLookup({
         <View style={styles.col}>
           <PickerField label="Date" type="date" value={date} onChange={setDate} />
         </View>
-      </View>
+      </Row>
       <Pressable
         onPress={submit}
         disabled={disabled}
@@ -1005,8 +1018,8 @@ function SavedTrips({
       <Text style={styles.hint}>
         Your current trip auto-saves locally. Save it under a name to switch between trips.
       </Text>
-      <View style={[styles.row2, { marginTop: 12 }]}>
-        <View style={[styles.col, { flex: 1.5 }]}>
+      <Row style={{ marginTop: 12 }}>
+        <View style={styles.col}>
           <TextInput
             style={styles.input}
             value={name}
@@ -1031,7 +1044,7 @@ function SavedTrips({
             <Text style={styles.buttonText}>{exists ? 'Overwrite' : 'Save trip'}</Text>
           </Pressable>
         </View>
-      </View>
+      </Row>
       {!canSave && <Text style={styles.hint}>Add at least one flight leg before saving.</Text>}
       {list.length > 0 && (
         <View style={{ marginTop: 14 }}>
@@ -1402,11 +1415,13 @@ const styles = StyleSheet.create({
     padding: 18,
     borderColor: C.rule,
     borderWidth: 1,
+    overflow: 'hidden',
   },
 
   // Inputs
   field: { marginBottom: 16 },
   row2: { flexDirection: 'row', gap: 12 },
+  rowStacked: { flexDirection: 'column', gap: 12 },
   col: { flex: 1, minWidth: 0 },
   label: {
     fontFamily: SANS,
@@ -1533,6 +1548,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     borderColor: C.ruleSoft,
     borderWidth: 1,
+    overflow: 'hidden',
   },
   legHeader: {
     flexDirection: 'row',
@@ -1556,6 +1572,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     borderColor: C.rule,
     borderWidth: 1,
+    overflow: 'hidden',
   },
   lookupHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   lookupTitle: { fontFamily: SERIF, fontSize: 17, color: C.ink, fontWeight: '600' },
