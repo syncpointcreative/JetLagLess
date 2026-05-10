@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
+import { readJson, storage, writeJson } from './src/lib/storage';
 import {
   BathroomFrequency,
   buildItineraryPlan,
@@ -70,12 +71,87 @@ const initial: FormState = {
   profile: DEFAULT_PROFILE,
 };
 
+const DRAFT_KEY = 'jetlagless:draft:v1';
+const TRIPS_KEY = 'jetlagless:trips:v1';
+
+interface SavedTrip {
+  name: string;
+  savedAt: number;
+  legs: LegForm[];
+  usualBedtime: string;
+  usualWakeTime: string;
+  prepDaysAvailable: string;
+}
+
+function hydrateDraft(): FormState {
+  const saved = readJson<Partial<FormState>>(DRAFT_KEY);
+  if (!saved || !Array.isArray(saved.legs) || saved.legs.length === 0) return initial;
+  return {
+    legs: saved.legs.map((l) => ({ ...emptyLeg(), ...l })),
+    usualBedtime: saved.usualBedtime ?? initial.usualBedtime,
+    usualWakeTime: saved.usualWakeTime ?? initial.usualWakeTime,
+    prepDaysAvailable: saved.prepDaysAvailable ?? initial.prepDaysAvailable,
+    profile: { ...DEFAULT_PROFILE, ...(saved.profile ?? {}) },
+  };
+}
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
 export default function App() {
-  const [form, setForm] = useState<FormState>(initial);
+  const [form, setForm] = useState<FormState>(() => hydrateDraft());
+  const [savedTrips, setSavedTrips] = useState<Record<string, SavedTrip>>(
+    () => readJson<Record<string, SavedTrip>>(TRIPS_KEY) ?? {},
+  );
+
+  // Auto-save draft on every change, debounced.
+  useEffect(() => {
+    const handle = setTimeout(() => writeJson(DRAFT_KEY, form), 400);
+    return () => clearTimeout(handle);
+  }, [form]);
+
+  const persistTrips = (next: Record<string, SavedTrip>) => {
+    setSavedTrips(next);
+    writeJson(TRIPS_KEY, next);
+  };
+
+  const saveCurrentAs = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const trip: SavedTrip = {
+      name: trimmed,
+      savedAt: Date.now(),
+      legs: form.legs,
+      usualBedtime: form.usualBedtime,
+      usualWakeTime: form.usualWakeTime,
+      prepDaysAvailable: form.prepDaysAvailable,
+    };
+    persistTrips({ ...savedTrips, [trimmed]: trip });
+  };
+
+  const loadTrip = (name: string) => {
+    const t = savedTrips[name];
+    if (!t) return;
+    setForm((f) => ({
+      ...f,
+      legs: t.legs.map((l) => ({ ...emptyLeg(), ...l, id: newLegId() })),
+      usualBedtime: t.usualBedtime,
+      usualWakeTime: t.usualWakeTime,
+      prepDaysAvailable: t.prepDaysAvailable,
+    }));
+  };
+
+  const deleteTrip = (name: string) => {
+    const next = { ...savedTrips };
+    delete next[name];
+    persistTrips(next);
+  };
+
+  const clearAll = () => {
+    setForm(initial);
+    storage.remove(DRAFT_KEY);
+  };
 
   const updateLeg = (id: string, patch: Partial<LegForm>) =>
     setForm((f) => ({ ...f, legs: f.legs.map((l) => (l.id === id ? { ...l, ...patch } : l)) }));
@@ -177,6 +253,15 @@ export default function App() {
         >
           <Text style={styles.secondaryText}>+ Add another leg</Text>
         </Pressable>
+
+        <SavedTrips
+          trips={savedTrips}
+          onSave={saveCurrentAs}
+          onLoad={loadTrip}
+          onDelete={deleteTrip}
+          onClear={clearAll}
+          canSave={hasMeaningfulLeg(form.legs)}
+        />
 
         <Section title="Your usual sleep">
           <Field
@@ -484,6 +569,97 @@ function FlightLookup({
       </Pressable>
       {error && <Text style={styles.hintBad}>{error}</Text>}
       {last && !error && <Text style={styles.hintGood}>Added {last}</Text>}
+    </View>
+  );
+}
+
+function SavedTrips({
+  trips,
+  onSave,
+  onLoad,
+  onDelete,
+  onClear,
+  canSave,
+}: {
+  trips: Record<string, SavedTrip>;
+  onSave: (name: string) => void;
+  onLoad: (name: string) => void;
+  onDelete: (name: string) => void;
+  onClear: () => void;
+  canSave: boolean;
+}) {
+  const [name, setName] = useState('');
+  const list = Object.values(trips).sort((a, b) => b.savedAt - a.savedAt);
+  const trimmed = name.trim();
+  const exists = trimmed.length > 0 && trips[trimmed] !== undefined;
+  const disabled = !canSave || trimmed.length === 0;
+
+  const submit = () => {
+    if (disabled) return;
+    onSave(trimmed);
+    setName('');
+  };
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Saved trips</Text>
+      <Text style={styles.hint}>
+        Your current trip auto-saves locally. Save it under a name to switch between trips.
+      </Text>
+      <View style={[styles.row2, { marginTop: 10 }]}>
+        <View style={[styles.col, { flex: 1.5 }]}>
+          <TextInput
+            style={styles.input}
+            value={name}
+            onChangeText={setName}
+            placeholder="Trip name (e.g. Tokyo May 2026)"
+            placeholderTextColor="#4a527a"
+            autoCorrect={false}
+            onSubmitEditing={submit}
+          />
+        </View>
+        <View style={styles.col}>
+          <Pressable
+            onPress={submit}
+            disabled={disabled}
+            style={({ pressed }) => [
+              styles.button,
+              { marginTop: 0 },
+              disabled && styles.buttonDisabled,
+              pressed && !disabled && styles.buttonPressed,
+            ]}
+          >
+            <Text style={styles.buttonText}>{exists ? 'Overwrite' : 'Save trip'}</Text>
+          </Pressable>
+        </View>
+      </View>
+      {!canSave && (
+        <Text style={styles.hint}>Add at least one flight leg before saving.</Text>
+      )}
+      {list.length > 0 && (
+        <View style={{ marginTop: 12 }}>
+          {list.map((t) => (
+            <View key={t.name} style={styles.tripRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tripName}>{t.name}</Text>
+                <Text style={styles.tripMeta}>
+                  {t.legs.length} leg{t.legs.length === 1 ? '' : 's'} · saved{' '}
+                  {new Date(t.savedAt).toLocaleDateString()}
+                </Text>
+              </View>
+              <Pressable onPress={() => onLoad(t.name)} hitSlop={8}>
+                <Text style={styles.tripAction}>Load</Text>
+              </Pressable>
+              <Pressable onPress={() => onDelete(t.name)} hitSlop={8}>
+                <Text style={[styles.tripAction, styles.tripDelete]}>Delete</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      )}
+      <Pressable onPress={onClear} hitSlop={6} style={{ marginTop: 12, alignSelf: 'flex-start' }}>
+        <Text style={styles.tripDelete}>Clear current trip</Text>
+      </Pressable>
     </View>
   );
 }
@@ -962,4 +1138,16 @@ const styles = StyleSheet.create({
   segmentPressed: { backgroundColor: '#1a2150' },
   segmentText: { fontSize: 13, color: '#9aa3c7', fontWeight: '500' },
   segmentTextActive: { color: '#fff', fontWeight: '700' },
+  tripRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderTopColor: '#2a3160',
+    borderTopWidth: 1,
+    gap: 14,
+  },
+  tripName: { fontSize: 14, color: '#fff', fontWeight: '600' },
+  tripMeta: { fontSize: 11, color: '#9aa3c7', marginTop: 2 },
+  tripAction: { fontSize: 13, color: '#a5b4fc', fontWeight: '600' },
+  tripDelete: { color: '#ff9b9b' },
 });
