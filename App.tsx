@@ -17,6 +17,7 @@ import {
   buildItineraryPlan,
   CaffeineSensitivity,
   Chronotype,
+  DayPlan,
   DEFAULT_PROFILE,
   ItineraryPlan,
   LegInput,
@@ -197,92 +198,35 @@ export default function App() {
     }
   }, [form]);
 
+  const [showPlan, setShowPlan] = useState(false);
+  // If form changes while plan is shown, leave it shown — user can re-toggle.
+  // But hide it on first paint until they've intentionally generated.
+  useEffect(() => {
+    if (showPlan && error) setShowPlan(true);
+  }, [error, showPlan]);
+
+  const canGenerate = hasMeaningfulLeg(form.legs) && !error;
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>JetLagLess</Text>
-        <Text style={styles.subtitle}>
-          Add each leg of your trip — we'll plan when to sleep on each flight, what to do on
-          layovers, and how to prep your body before you go.
-        </Text>
+        <View style={styles.hero}>
+          <Text style={styles.eyebrow}>Travel sleep planner</Text>
+          <Text style={styles.title}>JetLagLess</Text>
+          <Text style={styles.subtitle}>
+            A circadian playbook tailored to your flight, your sleep habits, and how your body
+            handles travel. Fill out the sections below, then generate your plan.
+          </Text>
+        </View>
 
-        <FlightLookup
-          buttonLabel={hasMeaningfulLeg(form.legs) ? 'Add flight to itinerary' : 'Use this flight'}
-          onResolved={(r) => {
-            const leg = sampleLeg({
-              originQuery: r.origin.iata
-                ? `${r.origin.iata}${r.origin.city ? ` — ${r.origin.city}` : ''}`
-                : '',
-              originIata: r.origin.iata ?? '',
-              destQuery: r.destination.iata
-                ? `${r.destination.iata}${r.destination.city ? ` — ${r.destination.city}` : ''}`
-                : '',
-              destIata: r.destination.iata ?? '',
-              departureDate: r.departure.localDate,
-              departureLocalTime: r.departure.localTime,
-              flightDurationHours: String(r.durationHours),
-            });
-            setForm((f) => {
-              // If the only existing leg is the empty starter, silently swap it
-              // for the looked-up flight; otherwise append.
-              if (f.legs.length === 1 && !isMeaningfulLeg(f.legs[0])) {
-                return { ...f, legs: [{ ...leg, id: f.legs[0].id }] };
-              }
-              return { ...f, legs: sortLegsByDeparture([...f.legs, leg]) };
-            });
-          }}
-        />
-
-        {form.legs.map((leg, i) => (
-          <LegSection
-            key={leg.id}
-            index={i}
-            total={form.legs.length}
-            leg={leg}
-            onChange={(patch) => updateLeg(leg.id, patch)}
-            onRemove={() => removeLeg(leg.id)}
-          />
-        ))}
-
-        <Pressable
-          onPress={addLeg}
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.secondaryPressed]}
+        <Section
+          step="1"
+          title="About you"
+          subtitle="Tell us a bit about how you sleep, eat, and handle flights. Saved across trips."
         >
-          <Text style={styles.secondaryText}>+ Add another leg</Text>
-        </Pressable>
-
-        <SavedTrips
-          trips={savedTrips}
-          onSave={saveCurrentAs}
-          onLoad={loadTrip}
-          onDelete={deleteTrip}
-          onClear={clearAll}
-          canSave={hasMeaningfulLeg(form.legs)}
-        />
-
-        <Section title="Your usual sleep">
-          <Field
-            label="Usual bedtime (HH:MM)"
-            value={form.usualBedtime}
-            onChange={(v) => setForm((f) => ({ ...f, usualBedtime: v }))}
-          />
-          <Field
-            label="Usual wake time (HH:MM)"
-            value={form.usualWakeTime}
-            onChange={(v) => setForm((f) => ({ ...f, usualWakeTime: v }))}
-          />
-          <Field
-            label="Days available to prep before flight"
-            value={form.prepDaysAvailable}
-            onChange={(v) => setForm((f) => ({ ...f, prepDaysAvailable: v }))}
-            keyboardType="number-pad"
-          />
-        </Section>
-
-        <Section title="About you">
           <Segmented<Chronotype>
             label="When do you feel most alert?"
             value={form.profile.chronotype}
@@ -345,10 +289,116 @@ export default function App() {
           />
         </Section>
 
-        {error && <Text style={styles.error}>{error}</Text>}
-        {plan && <Results plan={plan} legs={form.legs} />}
+        <Section
+          step="2"
+          title="Your usual sleep"
+          subtitle="What does a normal night at home look like? We'll shift this gradually toward your destination."
+        >
+          <View style={styles.row2}>
+            <View style={styles.col}>
+              <PickerField
+                label="Usual bedtime"
+                type="time"
+                value={form.usualBedtime}
+                onChange={(v) => setForm((f) => ({ ...f, usualBedtime: v }))}
+              />
+            </View>
+            <View style={styles.col}>
+              <PickerField
+                label="Usual wake time"
+                type="time"
+                value={form.usualWakeTime}
+                onChange={(v) => setForm((f) => ({ ...f, usualWakeTime: v }))}
+              />
+            </View>
+          </View>
+          <Field
+            label="Days available to prep before flight"
+            value={form.prepDaysAvailable}
+            onChange={(v) => setForm((f) => ({ ...f, prepDaysAvailable: v }))}
+            keyboardType="number-pad"
+          />
+        </Section>
 
-        <View style={{ height: 40 }} />
+        <Section
+          step="3"
+          title="Your trip"
+          subtitle="Look up a flight by number, or enter legs manually. Add more legs for layovers."
+        >
+          <FlightLookup
+            buttonLabel={hasMeaningfulLeg(form.legs) ? 'Add flight to itinerary' : 'Use this flight'}
+            onResolved={(r) => {
+              const leg = sampleLeg({
+                originQuery: r.origin.iata
+                  ? `${r.origin.iata}${r.origin.city ? ` — ${r.origin.city}` : ''}`
+                  : '',
+                originIata: r.origin.iata ?? '',
+                destQuery: r.destination.iata
+                  ? `${r.destination.iata}${r.destination.city ? ` — ${r.destination.city}` : ''}`
+                  : '',
+                destIata: r.destination.iata ?? '',
+                departureDate: r.departure.localDate,
+                departureLocalTime: r.departure.localTime,
+                flightDurationHours: String(r.durationHours),
+              });
+              setForm((f) => {
+                if (f.legs.length === 1 && !isMeaningfulLeg(f.legs[0])) {
+                  return { ...f, legs: [{ ...leg, id: f.legs[0].id }] };
+                }
+                return { ...f, legs: sortLegsByDeparture([...f.legs, leg]) };
+              });
+            }}
+          />
+
+          {form.legs.map((leg, i) => (
+            <LegSection
+              key={leg.id}
+              index={i}
+              total={form.legs.length}
+              leg={leg}
+              onChange={(patch) => updateLeg(leg.id, patch)}
+              onRemove={() => removeLeg(leg.id)}
+            />
+          ))}
+
+          <Pressable
+            onPress={addLeg}
+            style={({ pressed }) => [styles.dashedButton, pressed && styles.secondaryPressed]}
+          >
+            <Text style={styles.secondaryText}>+ Add another leg</Text>
+          </Pressable>
+        </Section>
+
+        <SavedTrips
+          trips={savedTrips}
+          onSave={saveCurrentAs}
+          onLoad={loadTrip}
+          onDelete={deleteTrip}
+          onClear={clearAll}
+          canSave={hasMeaningfulLeg(form.legs)}
+        />
+
+        <Pressable
+          onPress={() => setShowPlan(true)}
+          disabled={!canGenerate}
+          style={({ pressed }) => [
+            styles.bigButton,
+            !canGenerate && styles.bigButtonDisabled,
+            pressed && canGenerate && styles.bigButtonPressed,
+          ]}
+        >
+          <Text style={styles.bigButtonText}>Generate my plan</Text>
+        </Pressable>
+        {!canGenerate && (
+          <Text style={styles.errorMuted}>
+            {error ?? 'Add at least one flight leg to generate a plan.'}
+          </Text>
+        )}
+
+        {showPlan && error && <Text style={styles.error}>{error}</Text>}
+        {showPlan && plan && <Results plan={plan} legs={form.legs} />}
+
+        <View style={{ height: 60 }} />
       </ScrollView>
       <StatusBar style="light" />
     </KeyboardAvoidingView>
@@ -764,10 +814,30 @@ const webInputStyle: any = {
   colorScheme: 'dark',
 };
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  subtitle,
+  step,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  step?: string;
+  children: React.ReactNode;
+}) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionHeaderRow}>
+        {step && (
+          <View style={styles.stepBadge}>
+            <Text style={styles.stepBadgeText}>{step}</Text>
+          </View>
+        )}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          {subtitle && <Text style={styles.sectionSubtitle}>{subtitle}</Text>}
+        </View>
+      </View>
       {children}
     </View>
   );
@@ -961,18 +1031,19 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
         </Block>
       )}
 
-      {(plan.preFlightShifts.length > 0 || plan.preFlightAdvice.length > 0) && (
-        <Block title="Before you fly">
-          {plan.preFlightShifts.map((s) => (
-            <Text key={s.day} style={styles.body}>
-              <Text style={styles.bold}>Day -{plan.preFlightShifts.length - s.day + 1}:</Text> bed{' '}
-              {s.bedtime} → wake {s.wakeTime}
-            </Text>
-          ))}
-          {plan.preFlightAdvice.map((a, i) => (
-            <Text key={`adv-${i}`} style={styles.body}>
-              • {a}
-            </Text>
+      {plan.dailySchedule.length > 0 && (
+        <Block title="Daily schedule (light & melatonin)">
+          {plan.preFlightAdvice.length > 0 && (
+            <View style={{ marginBottom: 8 }}>
+              {plan.preFlightAdvice.map((a, i) => (
+                <Text key={`pf-${i}`} style={styles.body}>
+                  • {a}
+                </Text>
+              ))}
+            </View>
+          )}
+          {plan.dailySchedule.map((d, i) => (
+            <DayCard key={i} day={d} />
           ))}
         </Block>
       )}
@@ -984,6 +1055,60 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
           </Text>
         ))}
       </Block>
+    </View>
+  );
+}
+
+function DayCard({ day }: { day: DayPlan }) {
+  return (
+    <View
+      style={[
+        styles.dayCard,
+        day.phase === 'arrival' && styles.dayCardHighlight,
+      ]}
+    >
+      <Text style={styles.dayCardTitle}>{day.label}</Text>
+      <View style={styles.dayCardRows}>
+        {day.bedtime && day.wakeTime && (
+          <DayRow icon="🛏️" label="Sleep" value={`${day.bedtime} – ${day.wakeTime}`} />
+        )}
+        {day.brightLight && (
+          <DayRow
+            icon="☀️"
+            label="Bright light"
+            value={`${day.brightLight.start} – ${day.brightLight.end}`}
+          />
+        )}
+        {day.avoidLight && (
+          <DayRow
+            icon="🌑"
+            label="Avoid bright light"
+            value={`${day.avoidLight.start} – ${day.avoidLight.end}`}
+          />
+        )}
+        {day.melatonin && (
+          <DayRow
+            icon="💊"
+            label="Melatonin"
+            value={`${day.melatonin.dose} at ${day.melatonin.time}`}
+          />
+        )}
+      </View>
+      {day.notes.map((n, i) => (
+        <Text key={i} style={styles.dayCardNote}>
+          {n}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+function DayRow({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return (
+    <View style={styles.dayRow}>
+      <Text style={styles.dayRowIcon}>{icon}</Text>
+      <Text style={styles.dayRowLabel}>{label}</Text>
+      <Text style={styles.dayRowValue}>{value}</Text>
     </View>
   );
 }
@@ -1007,54 +1132,87 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: '#0b1020' },
-  container: { padding: 20, paddingTop: 60 },
-  title: { fontSize: 32, fontWeight: '700', color: '#fff', marginBottom: 6 },
-  subtitle: { fontSize: 14, color: '#9aa3c7', marginBottom: 24, lineHeight: 20 },
+  flex: { flex: 1, backgroundColor: '#070b1c' },
+  container: {
+    padding: 20,
+    paddingTop: 56,
+    maxWidth: 720,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  hero: { marginBottom: 28 },
+  eyebrow: {
+    fontSize: 12,
+    color: '#a5b4fc',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  title: { fontSize: 36, fontWeight: '800', color: '#fff', letterSpacing: -0.5, marginBottom: 10 },
+  subtitle: { fontSize: 15, color: '#9aa3c7', lineHeight: 22 },
   section: {
-    backgroundColor: '#151a35',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
+    backgroundColor: '#10172e',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 18,
+    borderColor: '#1a2150',
+    borderWidth: 1,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 14,
   },
-  sectionTitle: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  removeText: { fontSize: 13, color: '#ff9b9b' },
-  field: { marginBottom: 12 },
-  row2: { flexDirection: 'row', gap: 8 },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 16,
+  },
+  stepBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#4f46e5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepBadgeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  sectionTitle: { fontSize: 18, fontWeight: '700', color: '#fff', letterSpacing: -0.2 },
+  sectionSubtitle: { fontSize: 13, color: '#7c84ad', marginTop: 4, lineHeight: 18 },
+  removeText: { fontSize: 13, color: '#ff9b9b', fontWeight: '600' },
+  field: { marginBottom: 14 },
+  row2: { flexDirection: 'row', gap: 10 },
   col: { flex: 1 },
-  label: { fontSize: 13, color: '#c5cae9', marginBottom: 6 },
+  label: { fontSize: 12, color: '#9aa3c7', marginBottom: 6, fontWeight: '600', letterSpacing: 0.2 },
   input: {
-    backgroundColor: '#0b1020',
-    borderColor: '#2a3160',
+    backgroundColor: '#070b1c',
+    borderColor: '#252c54',
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     color: '#fff',
     fontSize: 15,
   },
-  hint: { fontSize: 11, color: '#6b73a0', marginTop: 4 },
-  hintGood: { fontSize: 11, color: '#7ee0a1', marginTop: 4 },
-  hintBad: { fontSize: 11, color: '#ff9b9b', marginTop: 4 },
+  hint: { fontSize: 12, color: '#6b73a0', marginTop: 4, lineHeight: 17 },
+  hintGood: { fontSize: 12, color: '#86efac', marginTop: 6, fontWeight: '600' },
+  hintBad: { fontSize: 12, color: '#fca5a5', marginTop: 6, fontWeight: '600' },
   suggestions: {
     marginTop: 6,
-    backgroundColor: '#0b1020',
-    borderColor: '#2a3160',
+    backgroundColor: '#070b1c',
+    borderColor: '#252c54',
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 10,
     overflow: 'hidden',
   },
   suggestion: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     borderBottomColor: '#1a2150',
     borderBottomWidth: 1,
     gap: 12,
@@ -1065,57 +1223,108 @@ const styles = StyleSheet.create({
   suggestionName: { fontSize: 11, color: '#9aa3c7', marginTop: 1 },
   button: {
     backgroundColor: '#4f46e5',
-    borderRadius: 8,
+    borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
     marginTop: 12,
   },
   buttonPressed: { backgroundColor: '#4338ca' },
-  buttonDisabled: { backgroundColor: '#2a3160' },
+  buttonDisabled: { backgroundColor: '#252c54' },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  bigButton: {
+    backgroundColor: '#6366f1',
+    borderRadius: 14,
+    paddingVertical: 18,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 8,
+    shadowColor: '#6366f1',
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  bigButtonPressed: { backgroundColor: '#4f46e5' },
+  bigButtonDisabled: { backgroundColor: '#252c54', shadowOpacity: 0 },
+  bigButtonText: { color: '#fff', fontSize: 17, fontWeight: '700', letterSpacing: 0.2 },
   secondaryButton: {
     backgroundColor: 'transparent',
     borderColor: '#4f46e5',
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
     marginTop: 12,
     marginBottom: 16,
   },
+  dashedButton: {
+    backgroundColor: 'transparent',
+    borderColor: '#3a4280',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 4,
+  },
   secondaryPressed: { backgroundColor: '#1a2150' },
   secondaryText: { color: '#a5b4fc', fontSize: 14, fontWeight: '600' },
-  error: { color: '#ff7676', marginVertical: 8 },
+  error: { color: '#fca5a5', marginVertical: 12, fontSize: 14, fontWeight: '600' },
+  errorMuted: { color: '#7c84ad', marginTop: 4, marginBottom: 12, fontSize: 12, textAlign: 'center' },
   results: {
-    backgroundColor: '#1a2150',
-    borderRadius: 14,
-    padding: 16,
-    marginTop: 4,
+    backgroundColor: '#10172e',
+    borderRadius: 16,
+    padding: 20,
+    marginTop: 12,
+    borderColor: '#3a4280',
+    borderWidth: 1,
   },
-  resultsTitle: { fontSize: 18, fontWeight: '700', color: '#fff', marginBottom: 12 },
-  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 },
-  summary: { width: '50%', marginBottom: 12 },
-  summaryLabel: { fontSize: 11, color: '#9aa3c7', textTransform: 'uppercase' },
-  summaryValue: { fontSize: 15, color: '#fff', fontWeight: '600', marginTop: 2 },
+  resultsTitle: { fontSize: 22, fontWeight: '800', color: '#fff', marginBottom: 16, letterSpacing: -0.4 },
+  summaryRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8, marginHorizontal: -4 },
+  summary: {
+    width: '50%',
+    paddingHorizontal: 4,
+    marginBottom: 14,
+  },
+  summaryLabel: { fontSize: 10, color: '#7c84ad', textTransform: 'uppercase', letterSpacing: 1, fontWeight: '700' },
+  summaryValue: { fontSize: 15, color: '#fff', fontWeight: '700', marginTop: 4 },
   block: {
-    backgroundColor: '#0f1538',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 10,
+    backgroundColor: '#070b1c',
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 12,
+    borderColor: '#1a2150',
+    borderWidth: 1,
   },
-  blockTitle: { fontSize: 14, fontWeight: '700', color: '#a5b4fc', marginBottom: 8 },
-  bigLine: { fontSize: 15, color: '#fff', marginBottom: 4 },
-  body: { fontSize: 13, color: '#c5cae9', lineHeight: 19, marginBottom: 4 },
+  blockTitle: { fontSize: 14, fontWeight: '700', color: '#a5b4fc', marginBottom: 10, letterSpacing: 0.2, textTransform: 'uppercase' },
+  bigLine: { fontSize: 15, color: '#fff', marginBottom: 4, lineHeight: 22 },
+  body: { fontSize: 13, color: '#c5cae9', lineHeight: 20, marginBottom: 4 },
   bold: { fontWeight: '700', color: '#fff' },
   layover: {
-    backgroundColor: '#1a2150',
+    backgroundColor: '#10172e',
     borderLeftColor: '#a5b4fc',
     borderLeftWidth: 3,
     borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
+    padding: 12,
+    marginTop: 12,
   },
   layoverTitle: { fontSize: 13, fontWeight: '700', color: '#fff', marginBottom: 4 },
+  dayCard: {
+    backgroundColor: '#10172e',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    borderColor: '#1a2150',
+    borderWidth: 1,
+  },
+  dayCardHighlight: { borderColor: '#6366f1', backgroundColor: '#1a205a' },
+  dayCardTitle: { fontSize: 13, fontWeight: '700', color: '#fff', marginBottom: 8 },
+  dayCardRows: {},
+  dayRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 3, gap: 8 },
+  dayRowIcon: { fontSize: 14, width: 22 },
+  dayRowLabel: { fontSize: 12, color: '#9aa3c7', flex: 1 },
+  dayRowValue: { fontSize: 13, color: '#fff', fontWeight: '600' },
+  dayCardNote: { fontSize: 11, color: '#7c84ad', marginTop: 6, lineHeight: 16, fontStyle: 'italic' },
   segmented: {
     flexDirection: 'row',
     borderRadius: 8,

@@ -69,6 +69,18 @@ export interface LayoverPlan {
   advice: string[];
 }
 
+export interface DayPlan {
+  label: string;
+  /** When this day occurs relative to flight: 'prep' (-N…-1), 'arrival', 'after' (+1…+N) */
+  phase: 'prep' | 'arrival' | 'after';
+  bedtime?: string;
+  wakeTime?: string;
+  brightLight?: { start: string; end: string };
+  avoidLight?: { start: string; end: string };
+  melatonin?: { time: string; dose: string };
+  notes: string[];
+}
+
 export interface ItineraryPlan {
   shiftHours: number;
   direction: Direction;
@@ -80,6 +92,7 @@ export interface ItineraryPlan {
   onboardSleepCapHours: number;
   preFlightShifts: { day: number; bedtime: string; wakeTime: string }[];
   preFlightAdvice: string[];
+  dailySchedule: DayPlan[];
   legs: LegPlan[];
   layovers: LayoverPlan[];
   inflightAdvice: string[];
@@ -319,6 +332,13 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
 
   const inflightAdvice = buildInflightAdvice(profile, legs, onboardSleepCapHours);
   const preFlightAdvice = buildPreFlightAdvice(profile, direction);
+  const dailySchedule = buildDailySchedule({
+    direction,
+    preFlightShifts,
+    usualBed,
+    usualWake,
+    daysToFullyAdjust,
+  });
 
   return {
     shiftHours: shift,
@@ -331,11 +351,136 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
     onboardSleepCapHours,
     preFlightShifts,
     preFlightAdvice,
+    dailySchedule,
     legs,
     layovers,
     inflightAdvice,
     arrivalAdvice,
   };
+}
+
+/**
+ * Build a per-day playbook covering prep days, arrival, and post-arrival days.
+ * Bright/avoid-light windows follow the standard phase response curve:
+ *   - Eastward (advance clock): morning light, evening dark, evening melatonin
+ *   - Westward (delay clock):   evening light, morning dark, no advance melatonin
+ */
+function buildDailySchedule({
+  direction,
+  preFlightShifts,
+  usualBed,
+  usualWake,
+  daysToFullyAdjust,
+}: {
+  direction: Direction;
+  preFlightShifts: { day: number; bedtime: string; wakeTime: string }[];
+  usualBed: number;
+  usualWake: number;
+  daysToFullyAdjust: number;
+}): DayPlan[] {
+  const schedule: DayPlan[] = [];
+
+  // Prep days: bedtime/wake come from preFlightShifts; light/melatonin keyed
+  // off the shifted clock so the user stages their phase before flying.
+  for (const s of preFlightShifts) {
+    const totalDays = preFlightShifts.length;
+    const offset = totalDays - s.day + 1;
+    const bed = parseTime(s.bedtime);
+    const wake = parseTime(s.wakeTime);
+    schedule.push(makeDay({
+      label: `Day -${offset} (before flight)`,
+      phase: 'prep',
+      bedtime: s.bedtime,
+      wakeTime: s.wakeTime,
+      bed,
+      wake,
+      direction,
+      includeMelatonin: true,
+    }));
+  }
+
+  // Arrival day uses destination's "normal" sleep schedule as the target.
+  schedule.push(makeDay({
+    label: 'Arrival day (destination time)',
+    phase: 'arrival',
+    bedtime: fmt(usualBed),
+    wakeTime: fmt(usualWake),
+    bed: usualBed,
+    wake: usualWake,
+    direction,
+    includeMelatonin: true,
+    extraNotes: [
+      direction === 'east'
+        ? 'Resist daytime naps; push through to a normal local bedtime.'
+        : direction === 'west'
+          ? 'Stay up using evening light if you arrive in the daytime.'
+          : '',
+    ].filter(Boolean),
+  }));
+
+  // Post-arrival catch-up days, capped so we don't bury the user.
+  const postDays = Math.min(daysToFullyAdjust, 4);
+  for (let d = 1; d <= postDays; d++) {
+    schedule.push(makeDay({
+      label: `Day +${d} (after arrival)`,
+      phase: 'after',
+      bedtime: fmt(usualBed),
+      wakeTime: fmt(usualWake),
+      bed: usualBed,
+      wake: usualWake,
+      direction,
+      includeMelatonin: d <= 2 && direction === 'east',
+    }));
+  }
+
+  return schedule;
+}
+
+function makeDay({
+  label,
+  phase,
+  bedtime,
+  wakeTime,
+  bed,
+  wake,
+  direction,
+  includeMelatonin,
+  extraNotes,
+}: {
+  label: string;
+  phase: DayPlan['phase'];
+  bedtime: string;
+  wakeTime: string;
+  bed: number;
+  wake: number;
+  direction: Direction;
+  includeMelatonin: boolean;
+  extraNotes?: string[];
+}): DayPlan {
+  const notes: string[] = [];
+  let brightLight: DayPlan['brightLight'];
+  let avoidLight: DayPlan['avoidLight'];
+  let melatonin: DayPlan['melatonin'];
+
+  if (direction === 'east') {
+    brightLight = { start: fmt(wake), end: fmt(wake + 2) };
+    avoidLight = { start: fmt(bed - 3), end: fmt(bed) };
+    if (includeMelatonin) {
+      melatonin = { time: fmt(bed - 5), dose: '0.5 mg' };
+      notes.push('Low-dose melatonin advances your clock when taken ~5h before bedtime.');
+    }
+  } else if (direction === 'west') {
+    brightLight = { start: fmt(bed - 2), end: fmt(bed) };
+    avoidLight = { start: fmt(wake), end: fmt(wake + 3) };
+    if (includeMelatonin && phase !== 'prep') {
+      melatonin = { time: bedtime, dose: '0.5 mg' };
+      notes.push('Take a small dose at bedtime as a sleep aid only — no daytime melatonin going west.');
+    }
+  }
+
+  if (extraNotes) notes.push(...extraNotes);
+
+  return { label, phase, bedtime, wakeTime, brightLight, avoidLight, melatonin, notes };
 }
 
 function buildInflightAdvice(
