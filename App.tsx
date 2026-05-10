@@ -11,29 +11,56 @@ import {
   View,
 } from 'react-native';
 import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
-import { buildPlan, JetlagPlan, tzOffsetHours } from './src/lib/jetlag';
+import { buildItineraryPlan, ItineraryPlan, LegInput } from './src/lib/jetlag';
 
-interface FormState {
+interface LegForm {
+  id: string;
   originQuery: string;
   originIata: string;
   destQuery: string;
   destIata: string;
-  departureDate: string; // YYYY-MM-DD
-  departureLocalTime: string; // HH:MM
+  departureDate: string;
+  departureLocalTime: string;
   flightDurationHours: string;
+}
+
+interface FormState {
+  legs: LegForm[];
   usualBedtime: string;
   usualWakeTime: string;
   prepDaysAvailable: string;
 }
 
+const newLegId = () => Math.random().toString(36).slice(2, 9);
+
+function emptyLeg(): LegForm {
+  return {
+    id: newLegId(),
+    originQuery: '',
+    originIata: '',
+    destQuery: '',
+    destIata: '',
+    departureDate: todayISO(),
+    departureLocalTime: '',
+    flightDurationHours: '',
+  };
+}
+
+function sampleLeg(over: Partial<LegForm>): LegForm {
+  return { ...emptyLeg(), ...over };
+}
+
 const initial: FormState = {
-  originQuery: 'JFK',
-  originIata: 'JFK',
-  destQuery: 'NRT',
-  destIata: 'NRT',
-  departureDate: todayISO(),
-  departureLocalTime: '18:30',
-  flightDurationHours: '13.5',
+  legs: [
+    sampleLeg({
+      originQuery: 'JFK — New York',
+      originIata: 'JFK',
+      destQuery: 'NRT — Tokyo',
+      destIata: 'NRT',
+      departureLocalTime: '18:30',
+      flightDurationHours: '13.5',
+    }),
+  ],
   usualBedtime: '23:00',
   usualWakeTime: '07:00',
   prepDaysAvailable: '3',
@@ -45,29 +72,38 @@ function todayISO(): string {
 
 export default function App() {
   const [form, setForm] = useState<FormState>(initial);
-  const set = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
-  const origin = lookupAirport(form.originIata);
-  const dest = lookupAirport(form.destIata);
+  const updateLeg = (id: string, patch: Partial<LegForm>) =>
+    setForm((f) => ({ ...f, legs: f.legs.map((l) => (l.id === id ? { ...l, ...patch } : l)) }));
+  const addLeg = () => setForm((f) => ({ ...f, legs: [...f.legs, emptyLeg()] }));
+  const removeLeg = (id: string) =>
+    setForm((f) => ({ ...f, legs: f.legs.length > 1 ? f.legs.filter((l) => l.id !== id) : f.legs }));
 
-  const { plan, error } = useMemo<{ plan?: JetlagPlan; error?: string }>(() => {
-    if (!origin) return { error: `Unknown origin airport "${form.originIata}". Try a 3-letter IATA code like JFK, LAX, LHR.` };
-    if (!dest) return { error: `Unknown destination airport "${form.destIata}". Try a 3-letter IATA code.` };
+  const { plan, error } = useMemo<{ plan?: ItineraryPlan; error?: string }>(() => {
     try {
-      const depDate = new Date(`${form.departureDate}T${form.departureLocalTime}:00`);
-      if (isNaN(depDate.getTime())) throw new Error('Invalid departure date or time.');
-      const homeOffsetHours = tzOffsetHours(origin.tz, depDate);
-      // Estimate destination offset at arrival instant for DST accuracy.
-      const flightHours = parseFloat(form.flightDurationHours);
-      if (!isFinite(flightHours) || flightHours <= 0) throw new Error('Enter a valid flight duration.');
-      const arrInstant = new Date(depDate.getTime() + flightHours * 3_600_000);
-      const destOffsetHours = tzOffsetHours(dest.tz, arrInstant);
+      const legs: LegInput[] = form.legs.map((l, i) => {
+        const o = lookupAirport(l.originIata);
+        const d = lookupAirport(l.destIata);
+        if (!o) throw new Error(`Leg ${i + 1}: pick an origin airport.`);
+        if (!d) throw new Error(`Leg ${i + 1}: pick a destination airport.`);
+        if (!l.departureDate || !l.departureLocalTime) {
+          throw new Error(`Leg ${i + 1}: enter departure date and time.`);
+        }
+        const dur = parseFloat(l.flightDurationHours);
+        if (!isFinite(dur) || dur <= 0) throw new Error(`Leg ${i + 1}: enter flight duration.`);
+        const depUtc = localToUtc(l.departureDate, l.departureLocalTime, o.tz);
+        if (isNaN(depUtc.getTime())) throw new Error(`Leg ${i + 1}: invalid date or time.`);
+        const arrUtc = new Date(depUtc.getTime() + dur * 3_600_000);
+        return { originTz: o.tz, destTz: d.tz, departureUtc: depUtc, arrivalUtc: arrUtc };
+      });
+      for (let i = 1; i < legs.length; i++) {
+        if (legs[i].departureUtc.getTime() <= legs[i - 1].arrivalUtc.getTime()) {
+          throw new Error(`Leg ${i + 1} departs before leg ${i} arrives.`);
+        }
+      }
       return {
-        plan: buildPlan({
-          homeOffsetHours,
-          destOffsetHours,
-          departureLocalTime: form.departureLocalTime,
-          flightDurationHours: flightHours,
+        plan: buildItineraryPlan({
+          legs,
           usualBedtime: form.usualBedtime,
           usualWakeTime: form.usualWakeTime,
           prepDaysAvailable: parseInt(form.prepDaysAvailable, 10) || 0,
@@ -76,7 +112,7 @@ export default function App() {
     } catch (e: any) {
       return { error: e.message };
     }
-  }, [form, origin, dest]);
+  }, [form]);
 
   return (
     <KeyboardAvoidingView
@@ -86,87 +122,76 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>JetLagLess</Text>
         <Text style={styles.subtitle}>
-          Enter your flight and your usual sleep — we'll plan when to nap, when to wake, and how to
-          prep your body.
+          Add each leg of your trip — we'll plan when to sleep on each flight, what to do on
+          layovers, and how to prep your body before you go.
         </Text>
 
         <FlightLookup
-          onResolved={(r) => {
-            const originAirport = lookupAirport(r.origin.iata ?? '');
-            const destAirport = lookupAirport(r.destination.iata ?? '');
-            setForm((f) => ({
-              ...f,
-              originQuery: originAirport ? airportLabel(originAirport) : (r.origin.iata ?? ''),
+          onResolved={(r, addAsNewLeg) => {
+            const leg = sampleLeg({
+              originQuery: r.origin.iata
+                ? `${r.origin.iata}${r.origin.city ? ` — ${r.origin.city}` : ''}`
+                : '',
               originIata: r.origin.iata ?? '',
-              destQuery: destAirport ? airportLabel(destAirport) : (r.destination.iata ?? ''),
+              destQuery: r.destination.iata
+                ? `${r.destination.iata}${r.destination.city ? ` — ${r.destination.city}` : ''}`
+                : '',
               destIata: r.destination.iata ?? '',
               departureDate: r.departure.localDate,
               departureLocalTime: r.departure.localTime,
               flightDurationHours: String(r.durationHours),
-            }));
+            });
+            setForm((f) => {
+              if (addAsNewLeg) return { ...f, legs: [...f.legs, leg] };
+              const replaceId = f.legs[0].id;
+              return {
+                ...f,
+                legs: [{ ...leg, id: replaceId }, ...f.legs.slice(1)],
+              };
+            });
           }}
+          hasLegs={form.legs.length > 0}
         />
 
-        <Section title="Flight">
-          <AirportPicker
-            label="Origin airport"
-            query={form.originQuery}
-            selected={origin}
-            onChangeQuery={(v) => setForm((f) => ({ ...f, originQuery: v, originIata: '' }))}
-            onSelect={(a) =>
-              setForm((f) => ({ ...f, originQuery: airportLabel(a), originIata: a.iata }))
-            }
-            placeholder="JFK, New York, Tokyo…"
+        {form.legs.map((leg, i) => (
+          <LegSection
+            key={leg.id}
+            index={i}
+            total={form.legs.length}
+            leg={leg}
+            onChange={(patch) => updateLeg(leg.id, patch)}
+            onRemove={() => removeLeg(leg.id)}
           />
-          <AirportPicker
-            label="Destination airport"
-            query={form.destQuery}
-            selected={dest}
-            onChangeQuery={(v) => setForm((f) => ({ ...f, destQuery: v, destIata: '' }))}
-            onSelect={(a) =>
-              setForm((f) => ({ ...f, destQuery: airportLabel(a), destIata: a.iata }))
-            }
-            placeholder="NRT, Tokyo, London…"
-          />
-          <Field
-            label="Departure date (YYYY-MM-DD)"
-            value={form.departureDate}
-            onChange={(v) => set('departureDate', v)}
-          />
-          <Field
-            label="Departure local time (HH:MM)"
-            value={form.departureLocalTime}
-            onChange={(v) => set('departureLocalTime', v)}
-          />
-          <Field
-            label="Total flight duration (hours, layovers included)"
-            value={form.flightDurationHours}
-            onChange={(v) => set('flightDurationHours', v)}
-            keyboardType="decimal-pad"
-          />
-        </Section>
+        ))}
+
+        <Pressable
+          onPress={addLeg}
+          style={({ pressed }) => [styles.secondaryButton, pressed && styles.secondaryPressed]}
+        >
+          <Text style={styles.secondaryText}>+ Add another leg</Text>
+        </Pressable>
 
         <Section title="Your usual sleep">
           <Field
             label="Usual bedtime (HH:MM)"
             value={form.usualBedtime}
-            onChange={(v) => set('usualBedtime', v)}
+            onChange={(v) => setForm((f) => ({ ...f, usualBedtime: v }))}
           />
           <Field
             label="Usual wake time (HH:MM)"
             value={form.usualWakeTime}
-            onChange={(v) => set('usualWakeTime', v)}
+            onChange={(v) => setForm((f) => ({ ...f, usualWakeTime: v }))}
           />
           <Field
             label="Days available to prep before flight"
             value={form.prepDaysAvailable}
-            onChange={(v) => set('prepDaysAvailable', v)}
+            onChange={(v) => setForm((f) => ({ ...f, prepDaysAvailable: v }))}
             keyboardType="number-pad"
           />
         </Section>
 
         {error && <Text style={styles.error}>{error}</Text>}
-        {plan && origin && dest && <Results plan={plan} origin={origin} dest={dest} />}
+        {plan && <Results plan={plan} legs={form.legs} />}
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -175,44 +200,90 @@ export default function App() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {children}
-    </View>
-  );
+/**
+ * Convert a wall-clock date+time in a given timezone to a UTC instant.
+ * Iterative because each candidate UTC may map to a different offset across DST.
+ */
+function localToUtc(dateStr: string, timeStr: string, tz: string): Date {
+  const naive = new Date(`${dateStr}T${timeStr}:00Z`);
+  if (isNaN(naive.getTime())) return naive;
+  let utc = naive;
+  for (let i = 0; i < 3; i++) {
+    const offset = tzOffsetMs(tz, utc);
+    utc = new Date(naive.getTime() - offset);
+  }
+  return utc;
 }
 
-function Field({
-  label,
-  value,
+function tzOffsetMs(tz: string, at: Date): number {
+  const utc = new Date(at.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const tgt = new Date(at.toLocaleString('en-US', { timeZone: tz }));
+  return tgt.getTime() - utc.getTime();
+}
+
+function LegSection({
+  index,
+  total,
+  leg,
   onChange,
-  hint,
-  keyboardType,
-  placeholder,
+  onRemove,
 }: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  hint?: string;
-  keyboardType?: 'decimal-pad' | 'number-pad' | 'numbers-and-punctuation' | 'default';
-  placeholder?: string;
+  index: number;
+  total: number;
+  leg: LegForm;
+  onChange: (patch: Partial<LegForm>) => void;
+  onRemove: () => void;
 }) {
+  const origin = lookupAirport(leg.originIata);
+  const dest = lookupAirport(leg.destIata);
   return (
-    <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        style={styles.input}
-        value={value}
-        onChangeText={onChange}
-        keyboardType={keyboardType ?? 'default'}
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder={placeholder}
-        placeholderTextColor="#4a527a"
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Leg {index + 1}</Text>
+        {total > 1 && (
+          <Pressable onPress={onRemove} hitSlop={10}>
+            <Text style={styles.removeText}>Remove</Text>
+          </Pressable>
+        )}
+      </View>
+      <AirportPicker
+        label="Origin airport"
+        query={leg.originQuery}
+        selected={origin}
+        onChangeQuery={(v) => onChange({ originQuery: v, originIata: '' })}
+        onSelect={(a) => onChange({ originQuery: airportLabel(a), originIata: a.iata })}
+        placeholder="JFK, New York…"
       />
-      {hint && <Text style={styles.hint}>{hint}</Text>}
+      <AirportPicker
+        label="Destination airport"
+        query={leg.destQuery}
+        selected={dest}
+        onChangeQuery={(v) => onChange({ destQuery: v, destIata: '' })}
+        onSelect={(a) => onChange({ destQuery: airportLabel(a), destIata: a.iata })}
+        placeholder="NRT, Tokyo…"
+      />
+      <View style={styles.row2}>
+        <View style={styles.col}>
+          <Field
+            label="Date (YYYY-MM-DD)"
+            value={leg.departureDate}
+            onChange={(v) => onChange({ departureDate: v })}
+          />
+        </View>
+        <View style={styles.col}>
+          <Field
+            label="Time (HH:MM)"
+            value={leg.departureLocalTime}
+            onChange={(v) => onChange({ departureLocalTime: v })}
+          />
+        </View>
+      </View>
+      <Field
+        label="Flight duration (hours)"
+        value={leg.flightDurationHours}
+        onChange={(v) => onChange({ flightDurationHours: v })}
+        keyboardType="decimal-pad"
+      />
     </View>
   );
 }
@@ -230,14 +301,20 @@ interface FlightLookupResult {
   durationHours: number;
 }
 
-function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => void }) {
+function FlightLookup({
+  onResolved,
+  hasLegs,
+}: {
+  onResolved: (r: FlightLookupResult, addAsNewLeg: boolean) => void;
+  hasLegs: boolean;
+}) {
   const [ident, setIdent] = useState('');
   const [date, setDate] = useState(todayISO());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [last, setLast] = useState<string | undefined>();
 
-  const submit = async () => {
+  const submit = async (addAsNewLeg: boolean) => {
     setLoading(true);
     setError(undefined);
     try {
@@ -245,7 +322,7 @@ function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => v
       const res = await fetch(url);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      onResolved(body as FlightLookupResult);
+      onResolved(body as FlightLookupResult, addAsNewLeg);
       setLast(`${body.ident}: ${body.origin.iata} → ${body.destination.iata}`);
     } catch (e: any) {
       setError(e.message ?? 'Lookup failed.');
@@ -257,9 +334,9 @@ function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => v
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Look up by flight number</Text>
-      <Text style={styles.hint}>Auto-fills the airports, date, time, and duration below.</Text>
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-        <View style={{ flex: 1.2 }}>
+      <Text style={styles.hint}>Auto-fills airport, date, time, and duration.</Text>
+      <View style={styles.row2}>
+        <View style={[styles.col, { flex: 1.2 }]}>
           <Text style={styles.label}>Flight (e.g. AA178)</Text>
           <TextInput
             style={styles.input}
@@ -271,7 +348,7 @@ function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => v
             placeholderTextColor="#4a527a"
           />
         </View>
-        <View style={{ flex: 1 }}>
+        <View style={styles.col}>
           <Text style={styles.label}>Date</Text>
           <TextInput
             style={styles.input}
@@ -283,19 +360,80 @@ function FlightLookup({ onResolved }: { onResolved: (r: FlightLookupResult) => v
           />
         </View>
       </View>
-      <Pressable
-        onPress={submit}
-        disabled={loading || ident.trim().length < 3}
-        style={({ pressed }) => [
-          styles.button,
-          (loading || ident.trim().length < 3) && styles.buttonDisabled,
-          pressed && styles.buttonPressed,
-        ]}
-      >
-        <Text style={styles.buttonText}>{loading ? 'Looking up…' : 'Look up flight'}</Text>
-      </Pressable>
+      <View style={styles.row2}>
+        <View style={styles.col}>
+          <Pressable
+            onPress={() => submit(false)}
+            disabled={loading || ident.trim().length < 3}
+            style={({ pressed }) => [
+              styles.button,
+              (loading || ident.trim().length < 3) && styles.buttonDisabled,
+              pressed && styles.buttonPressed,
+            ]}
+          >
+            <Text style={styles.buttonText}>
+              {loading ? 'Looking up…' : 'Replace leg 1'}
+            </Text>
+          </Pressable>
+        </View>
+        {hasLegs && (
+          <View style={styles.col}>
+            <Pressable
+              onPress={() => submit(true)}
+              disabled={loading || ident.trim().length < 3}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                { marginTop: 0 },
+                (loading || ident.trim().length < 3) && styles.buttonDisabled,
+                pressed && styles.secondaryPressed,
+              ]}
+            >
+              <Text style={styles.secondaryText}>Add as new leg</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
       {error && <Text style={styles.hintBad}>{error}</Text>}
       {last && !error && <Text style={styles.hintGood}>Filled from {last}</Text>}
+    </View>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  keyboardType,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  keyboardType?: 'decimal-pad' | 'number-pad' | 'numbers-and-punctuation' | 'default';
+  placeholder?: string;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChange}
+        keyboardType={keyboardType ?? 'default'}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder={placeholder}
+        placeholderTextColor="#4a527a"
+      />
     </View>
   );
 }
@@ -367,7 +505,7 @@ function AirportPicker({
   );
 }
 
-function Results({ plan, origin, dest }: { plan: JetlagPlan; origin: Airport; dest: Airport }) {
+function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
   const dirLabel =
     plan.direction === 'east'
       ? `Eastward, +${plan.shiftHours.toFixed(1)}h (advance)`
@@ -375,46 +513,78 @@ function Results({ plan, origin, dest }: { plan: JetlagPlan; origin: Airport; de
         ? `Westward, ${plan.shiftHours.toFixed(1)}h (delay)`
         : 'No timezone change';
 
+  const firstLeg = legs[0];
+  const lastLeg = legs[legs.length - 1];
+
   return (
     <View style={styles.results}>
       <Text style={styles.resultsTitle}>
-        {origin.city} → {dest.city}
+        {firstLeg?.originIata || '???'} → {lastLeg?.destIata || '???'}
       </Text>
 
       <View style={styles.summaryRow}>
         <Summary label="Direction" value={dirLabel} />
         <Summary label="Severity" value={plan.severity} />
         <Summary label="Full adjust" value={`~${plan.daysToFullyAdjust}d`} />
+        <Summary label="Total travel" value={`${plan.totalTravelHours.toFixed(1)}h`} />
         <Summary label="Arrives at" value={plan.arrivalLocalTime} />
+        <Summary label="Sleep target" value={`${plan.usualSleepDurationHours.toFixed(1)}h`} />
       </View>
 
-      <Block title="On the plane">
-        {plan.onboardSleep.shouldSleep ? (
-          <>
-            <Text style={styles.bigLine}>
-              Sleep at <Text style={styles.bold}>{plan.onboardSleep.sleepAtDestLocal}</Text> dest. /
-              flight hour {plan.onboardSleep.sleepAtFlightHour.toFixed(1)}
-            </Text>
-            <Text style={styles.bigLine}>
-              Wake at <Text style={styles.bold}>{plan.onboardSleep.wakeAtDestLocal}</Text> dest. /
-              flight hour {plan.onboardSleep.wakeAtFlightHour.toFixed(1)}
-            </Text>
-            <Text style={styles.body}>
-              Target ~{plan.onboardSleep.durationHours.toFixed(1)}h of sleep.
-            </Text>
-          </>
-        ) : (
-          <Text style={styles.bigLine}>Don't sleep — stay awake on this flight.</Text>
-        )}
-        <Text style={styles.body}>{plan.onboardSleep.rationale}</Text>
-      </Block>
+      {plan.legs.map((lp) => {
+        const f = legs[lp.index];
+        return (
+          <Block
+            key={lp.index}
+            title={`Leg ${lp.index + 1} · ${f?.originIata ?? '?'} → ${f?.destIata ?? '?'} · ${lp.durationHours.toFixed(1)}h`}
+          >
+            {lp.onboardSleep.shouldSleep ? (
+              <>
+                <Text style={styles.bigLine}>
+                  Sleep at flight hour {lp.onboardSleep.sleepAtFlightHour.toFixed(1)} (
+                  <Text style={styles.bold}>{lp.onboardSleep.sleepAtFinalDestLocal}</Text> at final
+                  dest)
+                </Text>
+                <Text style={styles.bigLine}>
+                  Wake at flight hour {lp.onboardSleep.wakeAtFlightHour.toFixed(1)} (
+                  <Text style={styles.bold}>{lp.onboardSleep.wakeAtFinalDestLocal}</Text> at final
+                  dest)
+                </Text>
+                <Text style={styles.body}>
+                  Target ~{lp.onboardSleep.durationHours.toFixed(1)}h of sleep on this leg.
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.bigLine}>Stay awake on this leg.</Text>
+            )}
+            <Text style={styles.body}>{lp.onboardSleep.rationale}</Text>
+            {plan.layovers
+              .filter((lo) => lo.afterLegIndex === lp.index)
+              .map((lo) => (
+                <View key={`lo-${lo.afterLegIndex}`} style={styles.layover}>
+                  <Text style={styles.layoverTitle}>
+                    Layover · {lo.durationHours.toFixed(1)}h ({lo.classification})
+                  </Text>
+                  <Text style={styles.body}>
+                    Land {lo.arrivalLocalTime} local · depart {lo.departureLocalTime} local
+                  </Text>
+                  {lo.advice.map((a, i) => (
+                    <Text key={i} style={styles.body}>
+                      • {a}
+                    </Text>
+                  ))}
+                </View>
+              ))}
+          </Block>
+        );
+      })}
 
       {plan.preFlightShifts.length > 0 && (
         <Block title="Pre-flight shift schedule">
           {plan.preFlightShifts.map((s) => (
             <Text key={s.day} style={styles.body}>
-              <Text style={styles.bold}>Day -{plan.preFlightShifts.length - s.day + 1}:</Text>{' '}
-              bed {s.bedtime} → wake {s.wakeTime}
+              <Text style={styles.bold}>Day -{plan.preFlightShifts.length - s.day + 1}:</Text> bed{' '}
+              {s.bedtime} → wake {s.wakeTime}
             </Text>
           ))}
         </Block>
@@ -460,8 +630,17 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
   },
-  sectionTitle: { fontSize: 16, fontWeight: '600', color: '#fff', marginBottom: 12 },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionTitle: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  removeText: { fontSize: 13, color: '#ff9b9b' },
   field: { marginBottom: 12 },
+  row2: { flexDirection: 'row', gap: 8 },
+  col: { flex: 1 },
   label: { fontSize: 13, color: '#c5cae9', marginBottom: 6 },
   input: {
     backgroundColor: '#0b1020',
@@ -494,12 +673,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   suggestionPressed: { backgroundColor: '#1a2150' },
-  suggestionIata: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#a5b4fc',
-    width: 44,
-  },
+  suggestionIata: { fontSize: 13, fontWeight: '700', color: '#a5b4fc', width: 44 },
   suggestionCity: { fontSize: 14, color: '#fff' },
   suggestionName: { fontSize: 11, color: '#9aa3c7', marginTop: 1 },
   button: {
@@ -512,6 +686,18 @@ const styles = StyleSheet.create({
   buttonPressed: { backgroundColor: '#4338ca' },
   buttonDisabled: { backgroundColor: '#2a3160' },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  secondaryButton: {
+    backgroundColor: 'transparent',
+    borderColor: '#4f46e5',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+    marginBottom: 16,
+  },
+  secondaryPressed: { backgroundColor: '#1a2150' },
+  secondaryText: { color: '#a5b4fc', fontSize: 14, fontWeight: '600' },
   error: { color: '#ff7676', marginVertical: 8 },
   results: {
     backgroundColor: '#1a2150',
@@ -534,4 +720,13 @@ const styles = StyleSheet.create({
   bigLine: { fontSize: 15, color: '#fff', marginBottom: 4 },
   body: { fontSize: 13, color: '#c5cae9', lineHeight: 19, marginBottom: 4 },
   bold: { fontWeight: '700', color: '#fff' },
+  layover: {
+    backgroundColor: '#1a2150',
+    borderLeftColor: '#a5b4fc',
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+  },
+  layoverTitle: { fontSize: 13, fontWeight: '700', color: '#fff', marginBottom: 4 },
 });
