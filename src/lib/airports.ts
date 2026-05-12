@@ -6,6 +6,8 @@ export interface Airport {
   city: string;
   country: string;
   tz: string;
+  lat: number;
+  lon: number;
 }
 
 const raw = data as Record<string, Omit<Airport, 'iata'>>;

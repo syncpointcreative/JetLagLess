@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { FlightMap, MapLeg } from './src/components/FlightMap';
 import { Airport, lookupAirport, searchAirports } from './src/lib/airports';
 import { readJson, readJsonSync, storage, writeJson } from './src/lib/storage';
 import {
@@ -1138,6 +1139,23 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
   const firstLeg = legs[0];
   const lastLeg = legs[legs.length - 1];
 
+  const mapLegs: MapLeg[] = plan.legs
+    .map((lp): MapLeg | null => {
+      const f = legs[lp.index];
+      const origin = lookupAirport(f?.originIata ?? '');
+      const destination = lookupAirport(f?.destIata ?? '');
+      if (!origin || !destination) return null;
+      const sleepWindow: [number, number] | null =
+        lp.onboardSleep.shouldSleep && lp.durationHours > 0
+          ? [
+              lp.onboardSleep.sleepAtFlightHour / lp.durationHours,
+              lp.onboardSleep.wakeAtFlightHour / lp.durationHours,
+            ]
+          : null;
+      return { origin, destination, sleepWindow };
+    })
+    .filter((x): x is MapLeg => x !== null);
+
   return (
     <View style={styles.results}>
       <View style={styles.resultsHero}>
@@ -1147,6 +1165,8 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
         </Text>
         <View style={styles.resultsRule} />
       </View>
+
+      {mapLegs.length > 0 && <FlightMap legs={mapLegs} />}
 
       <View style={styles.summaryGrid}>
         <Summary label="Direction" value={dirLabel} />
