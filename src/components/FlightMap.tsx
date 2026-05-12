@@ -34,25 +34,56 @@ const C = {
   label: '#15233f',
 };
 
-// Use a simple Equirectangular projection clipped to the bounding box of the
-// route — much more legible than always showing the whole world.
+// Use a route-centered equirectangular projection: we pivot the map's
+// central meridian to the great-circle midpoint of the route so transpacific
+// flights don't wrap around the edges of the map.
 const PADDING_DEG = 12;
 
-function projection(bounds: { minLon: number; maxLon: number; minLat: number; maxLat: number }, w: number, h: number) {
+/**
+ * Normalize a longitude into the interval [centralLon - 180, centralLon + 180].
+ * After normalization, the route sits contiguously around centralLon.
+ */
+function normalizeLon(lon: number, centralLon: number): number {
+  let diff = lon - centralLon;
+  while (diff > 180) diff -= 360;
+  while (diff < -180) diff += 360;
+  return centralLon + diff;
+}
+
+/** Spherical centroid of a set of (lon,lat) points; used as the map center. */
+function sphericalCentroid(points: LngLat[]): [number, number] {
+  let x = 0, y = 0, z = 0;
+  for (const [lon, lat] of points) {
+    const phi = (lat * Math.PI) / 180;
+    const lam = (lon * Math.PI) / 180;
+    x += Math.cos(phi) * Math.cos(lam);
+    y += Math.cos(phi) * Math.sin(lam);
+    z += Math.sin(phi);
+  }
+  const lonRad = Math.atan2(y, x);
+  const latRad = Math.atan2(z, Math.sqrt(x * x + y * y));
+  return [(lonRad * 180) / Math.PI, (latRad * 180) / Math.PI];
+}
+
+function projection(
+  bounds: { minLon: number; maxLon: number; minLat: number; maxLat: number },
+  w: number,
+  h: number,
+) {
   const lonSpan = bounds.maxLon - bounds.minLon;
   const latSpan = bounds.maxLat - bounds.minLat;
-  // Preserve aspect ratio (cos-correction at mid latitude).
   const midLat = (bounds.maxLat + bounds.minLat) / 2;
+  const cosLat = Math.cos((midLat * Math.PI) / 180) || 1;
   const kx = w / lonSpan;
-  const ky = h / (latSpan / Math.cos((midLat * Math.PI) / 180));
+  const ky = h / (latSpan / cosLat);
   const k = Math.min(kx, ky);
   const projectedLonSpan = lonSpan * k;
-  const projectedLatSpan = (latSpan / Math.cos((midLat * Math.PI) / 180)) * k;
+  const projectedLatSpan = (latSpan / cosLat) * k;
   const offsetX = (w - projectedLonSpan) / 2;
   const offsetY = (h - projectedLatSpan) / 2;
   return (lon: number, lat: number): [number, number] => [
     offsetX + (lon - bounds.minLon) * k,
-    offsetY + ((bounds.maxLat - lat) / Math.cos((midLat * Math.PI) / 180)) * k,
+    offsetY + ((bounds.maxLat - lat) / cosLat) * k,
   ];
 }
 
@@ -118,7 +149,7 @@ function pathFromPoints(points: [number, number][]): string {
 export function FlightMap({ legs }: FlightMapProps) {
   if (legs.length === 0) return null;
 
-  // Build all great-circle arcs and figure out the bounding box.
+  // Build all great-circle arcs.
   const arcs = legs.map((leg) => {
     const pts = greatCirclePoints(
       [leg.origin.lon, leg.origin.lat],
@@ -126,18 +157,32 @@ export function FlightMap({ legs }: FlightMapProps) {
     );
     return { leg, pts };
   });
+
+  // Pivot the projection's central meridian to the great-circle midpoint of
+  // the route. This keeps transpacific or transarctic flights centered
+  // instead of wrapping around the edges of a Greenwich-centered map.
+  const arcMidpoints: LngLat[] = arcs.map((a) => a.pts[Math.floor(a.pts.length / 2)]);
+  const [centralLon] = sphericalCentroid(arcMidpoints);
+
+  // Re-express every point relative to the chosen central meridian.
+  const shift = (p: LngLat): LngLat => [normalizeLon(p[0], centralLon), p[1]];
+  const shiftedArcs = arcs.map((a) => ({
+    leg: a.leg,
+    pts: a.pts.map(shift),
+  }));
+
   const allLngLat: LngLat[] = [
-    ...arcs.flatMap((a) => a.pts),
+    ...shiftedArcs.flatMap((a) => a.pts),
     ...legs.flatMap((l) => [
-      [l.origin.lon, l.origin.lat] as LngLat,
-      [l.destination.lon, l.destination.lat] as LngLat,
+      shift([l.origin.lon, l.origin.lat]),
+      shift([l.destination.lon, l.destination.lat]),
     ]),
   ];
   const lons = allLngLat.map((p) => p[0]);
   const lats = allLngLat.map((p) => p[1]);
   const bounds = {
-    minLon: Math.max(-180, Math.min(...lons) - PADDING_DEG),
-    maxLon: Math.min(180, Math.max(...lons) + PADDING_DEG),
+    minLon: Math.min(...lons) - PADDING_DEG,
+    maxLon: Math.max(...lons) + PADDING_DEG,
     minLat: Math.max(-85, Math.min(...lats) - PADDING_DEG),
     maxLat: Math.min(85, Math.max(...lats) + PADDING_DEG),
   };
@@ -146,36 +191,41 @@ export function FlightMap({ legs }: FlightMapProps) {
   const H = 380;
   const project = projection(bounds, W, H);
 
-  // Build land paths (clipped to bounds for performance).
+  // Build land paths: shift each ring to the centered coord system, split
+  // at the new antimeridian for any ring that wraps, and project.
   const landPaths: string[] = [];
   for (const poly of world) {
     for (const ring of poly) {
-      // Quick reject if entirely outside bounds
+      const shifted = ring.map(([lon, lat]) => shift([lon, lat]));
+      // Quick reject if entirely outside bounds.
       let any = false;
-      for (const [lon, lat] of ring) {
+      for (const [lon, lat] of shifted) {
         if (lon >= bounds.minLon && lon <= bounds.maxLon && lat >= bounds.minLat && lat <= bounds.maxLat) {
           any = true;
           break;
         }
       }
       if (!any) continue;
-      const projected = ring.map(([lon, lat]) => project(lon, lat));
-      landPaths.push(pathFromPoints(projected) + ' Z');
+      const segs = splitAtAntimeridian(shifted);
+      for (const seg of segs) {
+        if (seg.length < 2) continue;
+        const projected = seg.map(([lon, lat]) => project(lon, lat));
+        landPaths.push(pathFromPoints(projected) + ' Z');
+      }
     }
   }
 
-  // Project each arc and split at antimeridian
-  const projectedArcs = arcs.map((a) => {
-    const segs = splitAtAntimeridian(a.pts);
-    return {
-      leg: a.leg,
-      pts: a.pts,
-      segs: segs.map((seg) => seg.map(([lon, lat]) => project(lon, lat))),
-    };
-  });
+  // Project each arc (already in shifted coords).
+  const projectedArcs = shiftedArcs.map((a) => ({
+    leg: a.leg,
+    pts: a.pts,
+    segs: splitAtAntimeridian(a.pts).map((seg) =>
+      seg.map(([lon, lat]) => project(lon, lat)),
+    ),
+  }));
 
-  // Sleep segments per leg
-  const sleepSegments = arcs.flatMap((a) => {
+  // Sleep segments per leg (slice the arc in fractional space before splitting).
+  const sleepSegments = shiftedArcs.flatMap((a) => {
     const win = a.leg.sleepWindow;
     if (!win) return [];
     const [t0, t1] = win;
@@ -184,11 +234,12 @@ export function FlightMap({ legs }: FlightMapProps) {
     const i0 = Math.max(0, Math.floor(t0 * total));
     const i1 = Math.min(total, Math.ceil(t1 * total));
     const seg = a.pts.slice(i0, i1 + 1);
-    const segs = splitAtAntimeridian(seg);
-    return segs.map((s) => s.map(([lon, lat]) => project(lon, lat)));
+    return splitAtAntimeridian(seg).map((s) =>
+      s.map(([lon, lat]) => project(lon, lat)),
+    );
   });
 
-  // Airport markers (deduplicated)
+  // Airport markers (deduplicated).
   const airportSet = new Map<string, Airport>();
   for (const leg of legs) {
     airportSet.set(leg.origin.iata, leg.origin);
@@ -244,7 +295,8 @@ export function FlightMap({ legs }: FlightMapProps) {
         {/* Airport markers */}
         <G>
           {Array.from(airportSet.values()).map((a) => {
-            const [x, y] = project(a.lon, a.lat);
+            const [shiftedLon, shiftedLat] = shift([a.lon, a.lat]);
+            const [x, y] = project(shiftedLon, shiftedLat);
             return (
               <G key={a.iata}>
                 <Circle cx={x} cy={y} r={5} fill={C.airportRing} />
