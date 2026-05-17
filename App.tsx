@@ -1218,7 +1218,11 @@ function Results({ plan, legs }: { plan: ItineraryPlan; legs: LegForm[] }) {
                 .map((lo) => (
                   <View key={`lo-${lo.afterLegIndex}`} style={styles.layover}>
                     <Text style={styles.layoverTitle}>
-                      Layover · {lo.durationHours.toFixed(1)}h ({lo.classification})
+                      {lo.classification === 'stopover' ? 'Stopover' : 'Layover'} ·{' '}
+                      {lo.durationHours >= 24
+                        ? `${(lo.durationHours / 24).toFixed(1)} days`
+                        : `${lo.durationHours.toFixed(1)}h`}{' '}
+                      ({lo.classification})
                     </Text>
                     <Text style={styles.body}>
                       Land {lo.arrivalLocalTime} local · depart {lo.departureLocalTime} local
@@ -1281,6 +1285,9 @@ function DayCard({ day }: { day: DayPlan }) {
   return (
     <View style={[styles.dayCard, day.phase === 'arrival' && styles.dayCardHighlight]}>
       <Text style={styles.dayCardTitle}>{day.label}</Text>
+      {day.timezone && day.phase === 'stopover' && (
+        <Text style={styles.dayCardTz}>{day.timezone}</Text>
+      )}
       <View style={styles.dayCardRows}>
         {day.bedtime && day.wakeTime && (
           <DayRow label="Sleep" value={`${day.bedtime} – ${day.wakeTime}`} />
@@ -1783,6 +1790,16 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderTopColor: C.ruleSoft,
     borderTopWidth: 1,
+  },
+  dayCardTz: {
+    fontFamily: 'Inter, sans-serif',
+    fontSize: 10,
+    color: '#7d8499',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginTop: -6,
+    marginBottom: 8,
+    fontWeight: '600',
   },
   dayCardHighlight: {
     backgroundColor: C.highlight,

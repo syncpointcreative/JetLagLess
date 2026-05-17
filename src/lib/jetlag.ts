@@ -65,14 +65,17 @@ export interface LayoverPlan {
   airportTz: string;
   arrivalLocalTime: string;
   departureLocalTime: string;
-  classification: 'short' | 'medium' | 'long';
+  classification: 'short' | 'medium' | 'long' | 'stopover';
   advice: string[];
 }
 
 export interface DayPlan {
   label: string;
-  /** When this day occurs relative to flight: 'prep' (-N…-1), 'arrival', 'after' (+1…+N) */
-  phase: 'prep' | 'arrival' | 'after';
+  /** When this day occurs relative to flight: 'prep' (-N…-1), 'stopover'
+   * (between legs), 'arrival', 'after' (+1…+N). */
+  phase: 'prep' | 'stopover' | 'arrival' | 'after';
+  /** IANA timezone whose clock this day is expressed in. */
+  timezone?: string;
   bedtime?: string;
   wakeTime?: string;
   brightLight?: { start: string; end: string };
@@ -280,14 +283,20 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
     const arrLocal = localHour(arrived, tz);
     const depLocal = localHour(nextDep, tz);
     const cls: LayoverPlan['classification'] =
-      layoverHours < 3 ? 'short' : layoverHours < 8 ? 'medium' : 'long';
+      layoverHours < 3
+        ? 'short'
+        : layoverHours < 8
+          ? 'medium'
+          : layoverHours < 20
+            ? 'long'
+            : 'stopover';
     const advice: string[] = [];
     if (cls === 'short') {
       advice.push('Stretch, walk the terminal, hydrate. No time for a real rest.');
     } else if (cls === 'medium') {
       advice.push('Get a real meal at the local meal time, walk, hydrate.');
       advice.push('Avoid napping unless the next leg leaves overnight at the final destination.');
-    } else {
+    } else if (cls === 'long') {
       const layoverNight = nightOverlap(arrLocal, arrLocal + layoverHours);
       if (layoverNight.duration >= 4) {
         advice.push(
@@ -296,6 +305,13 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
       } else {
         advice.push('Long daytime layover — eat on local schedule, get sunlight, walk.');
       }
+    } else {
+      // stopover: at least one full night here
+      const nights = Math.round(layoverHours / 24);
+      advice.push(
+        `Stopover of ~${nights} night${nights === 1 ? '' : 's'}. Treat this like a mini-trip: sleep on local time here, your body will partially adapt.`,
+      );
+      advice.push('See the daily schedule below for stopover sleep targets.');
     }
     layovers.push({
       afterLegIndex: i,
@@ -338,6 +354,7 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
     usualBed,
     usualWake,
     daysToFullyAdjust,
+    legs: input.legs,
   });
 
   return {
@@ -371,12 +388,14 @@ function buildDailySchedule({
   usualBed,
   usualWake,
   daysToFullyAdjust,
+  legs,
 }: {
   direction: Direction;
   preFlightShifts: { day: number; bedtime: string; wakeTime: string }[];
   usualBed: number;
   usualWake: number;
   daysToFullyAdjust: number;
+  legs: LegInput[];
 }): DayPlan[] {
   const schedule: DayPlan[] = [];
 
@@ -397,6 +416,35 @@ function buildDailySchedule({
       direction,
       includeMelatonin: true,
     }));
+  }
+
+  // Stopover days for any inter-leg gap of ~20h+ (i.e. you sleep at least
+  // one night between legs). Each night is rendered as its own day card on
+  // the stopover airport's local clock.
+  for (let i = 0; i < legs.length - 1; i++) {
+    const arrived = legs[i].arrivalUtc;
+    const nextDep = legs[i + 1].departureUtc;
+    const gapHours = (nextDep.getTime() - arrived.getTime()) / 3_600_000;
+    if (gapHours < 20) continue;
+    const stopoverTz = legs[i + 1].originTz;
+    const nights = Math.max(1, Math.round(gapHours / 24));
+    const cityHint = legs[i + 1].originTz.split('/').pop()?.replace(/_/g, ' ') ?? 'Stopover';
+    for (let n = 1; n <= nights; n++) {
+      schedule.push(makeDay({
+        label: `Stopover night ${n} in ${cityHint}`,
+        phase: 'stopover',
+        bedtime: fmt(usualBed),
+        wakeTime: fmt(usualWake),
+        bed: usualBed,
+        wake: usualWake,
+        direction: 'none',
+        includeMelatonin: false,
+        timezone: stopoverTz,
+        extraNotes: [
+          'Sleep on local time here — your body will partially adapt to this timezone before the next leg.',
+        ],
+      }));
+    }
   }
 
   // Arrival day uses destination's "normal" sleep schedule as the target.
@@ -446,6 +494,7 @@ function makeDay({
   direction,
   includeMelatonin,
   extraNotes,
+  timezone,
 }: {
   label: string;
   phase: DayPlan['phase'];
@@ -456,6 +505,7 @@ function makeDay({
   direction: Direction;
   includeMelatonin: boolean;
   extraNotes?: string[];
+  timezone?: string;
 }): DayPlan {
   const notes: string[] = [];
   let brightLight: DayPlan['brightLight'];
@@ -480,7 +530,7 @@ function makeDay({
 
   if (extraNotes) notes.push(...extraNotes);
 
-  return { label, phase, bedtime, wakeTime, brightLight, avoidLight, melatonin, notes };
+  return { label, phase, timezone, bedtime, wakeTime, brightLight, avoidLight, melatonin, notes };
 }
 
 function buildInflightAdvice(
