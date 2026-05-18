@@ -65,7 +65,7 @@ export interface LayoverPlan {
   airportTz: string;
   arrivalLocalTime: string;
   departureLocalTime: string;
-  classification: 'short' | 'medium' | 'long' | 'stopover';
+  classification: 'short' | 'medium' | 'stopover';
   advice: string[];
 }
 
@@ -283,34 +283,25 @@ export function buildItineraryPlan(input: ItineraryInput): ItineraryPlan {
     const arrLocal = localHour(arrived, tz);
     const depLocal = localHour(nextDep, tz);
     const cls: LayoverPlan['classification'] =
-      layoverHours < 3
-        ? 'short'
-        : layoverHours < 8
-          ? 'medium'
-          : layoverHours < 20
-            ? 'long'
-            : 'stopover';
+      layoverHours < 3 ? 'short' : layoverHours < 10 ? 'medium' : 'stopover';
     const advice: string[] = [];
     if (cls === 'short') {
       advice.push('Stretch, walk the terminal, hydrate. No time for a real rest.');
     } else if (cls === 'medium') {
       advice.push('Get a real meal at the local meal time, walk, hydrate.');
       advice.push('Avoid napping unless the next leg leaves overnight at the final destination.');
-    } else if (cls === 'long') {
-      const layoverNight = nightOverlap(arrLocal, arrLocal + layoverHours);
-      if (layoverNight.duration >= 4) {
+    } else {
+      // stopover: ≥10h — too long to power through without rest.
+      const nights = Math.max(1, Math.round(layoverHours / 24));
+      if (layoverHours < 20) {
         advice.push(
-          `Long layover overlaps ${layoverNight.duration.toFixed(1)}h with night here — book a lounge or hotel and sleep.`,
+          `Stopover of ${Math.round(layoverHours)}h — too long to power through. Book a lounge room, airport hotel, or nearby hotel and get a proper sleep block on local time.`,
         );
       } else {
-        advice.push('Long daytime layover — eat on local schedule, get sunlight, walk.');
+        advice.push(
+          `Stopover of ~${nights} night${nights === 1 ? '' : 's'}. Treat this like a mini-trip: sleep on local time here, your body will partially adapt.`,
+        );
       }
-    } else {
-      // stopover: at least one full night here
-      const nights = Math.round(layoverHours / 24);
-      advice.push(
-        `Stopover of ~${nights} night${nights === 1 ? '' : 's'}. Treat this like a mini-trip: sleep on local time here, your body will partially adapt.`,
-      );
       advice.push('See the daily schedule below for stopover sleep targets.');
     }
     layovers.push({
@@ -418,20 +409,24 @@ function buildDailySchedule({
     }));
   }
 
-  // Stopover days for any inter-leg gap of ~20h+ (i.e. you sleep at least
-  // one night between legs). Each night is rendered as its own day card on
-  // the stopover airport's local clock.
+  // Stopover days for any inter-leg gap of ~10h+ (long enough that you
+  // need a real sleep block, whether at an airport hotel or off-airport).
+  // Each "night" is rendered as its own day card on the stopover airport's
+  // local clock.
   for (let i = 0; i < legs.length - 1; i++) {
     const arrived = legs[i].arrivalUtc;
     const nextDep = legs[i + 1].departureUtc;
     const gapHours = (nextDep.getTime() - arrived.getTime()) / 3_600_000;
-    if (gapHours < 20) continue;
+    if (gapHours < 10) continue;
     const stopoverTz = legs[i + 1].originTz;
     const nights = Math.max(1, Math.round(gapHours / 24));
     const cityHint = legs[i + 1].originTz.split('/').pop()?.replace(/_/g, ' ') ?? 'Stopover';
+    const shortStop = gapHours < 20;
     for (let n = 1; n <= nights; n++) {
       schedule.push(makeDay({
-        label: `Stopover night ${n} in ${cityHint}`,
+        label: shortStop
+          ? `Stopover rest in ${cityHint}`
+          : `Stopover night ${n} in ${cityHint}`,
         phase: 'stopover',
         bedtime: fmt(usualBed),
         wakeTime: fmt(usualWake),
@@ -440,9 +435,13 @@ function buildDailySchedule({
         direction: 'none',
         includeMelatonin: false,
         timezone: stopoverTz,
-        extraNotes: [
-          'Sleep on local time here — your body will partially adapt to this timezone before the next leg.',
-        ],
+        extraNotes: shortStop
+          ? [
+              'Get a proper sleep block on local time — a lounge room, airport hotel, or nearby hotel beats trying to power through.',
+            ]
+          : [
+              'Sleep on local time here — your body will partially adapt to this timezone before the next leg.',
+            ],
       }));
     }
   }
